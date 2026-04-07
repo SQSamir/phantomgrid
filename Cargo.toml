@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+  "shared/phantomgrid-types",
+  "shared/phantomgrid-db",
+  "shared/phantomgrid-kafka",
+  "services/api-gateway",
+  "services/auth-service",
+  "services/decoy-manager",
+  "services/honeypot-engine",
+  "services/event-processor",
+  "services/alert-engine",
+  "services/realtime",
+  "services/analytics",
+  "services/tenant-manager",
+  "services/sensor"
+]
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.7", features = ["ws", "multipart"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.7", features = ["postgres", "uuid", "chrono", "runtime-tokio-native-tls"] }
+redis = { version = "0.25", features = ["tokio-comp"] }
+rdkafka = { version = "0.36", features = ["cmake-build"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+jsonwebtoken = "9"
+argon2 = "0.5"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+anyhow = "1"
+thiserror = "1"
+dotenvy = "0.15"

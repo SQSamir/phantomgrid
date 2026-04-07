@@ -1,0 +1,70 @@
+version: "3.9"
+networks:
+  phantomgrid-net:
+    driver: bridge
+volumes:
+  pg_data:
+  redis_data:
+  kafka_data:
+  clickhouse_data:
+  minio_data:
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-phantomgrid}
+      POSTGRES_USER: ${POSTGRES_USER:-phantomgrid}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+    volumes: ["pg_data:/var/lib/postgresql/data"]
+    networks: [phantomgrid-net]
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: ["redis_data:/data"]
+    networks: [phantomgrid-net]
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    networks: [phantomgrid-net]
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    depends_on: [zookeeper]
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    volumes: ["kafka_data:/var/lib/kafka/data"]
+    networks: [phantomgrid-net]
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    volumes: ["clickhouse_data:/var/lib/clickhouse"]
+    networks: [phantomgrid-net]
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-change_me}
+    volumes: ["minio_data:/data"]
+    networks: [phantomgrid-net]
+
+  api-gateway:
+    build: ./services/api-gateway
+    env_file: .env
+    ports: ["8080:8080"]
+    depends_on: [auth-service]
+    networks: [phantomgrid-net]
+
+  auth-service:
+    build: ./services/auth-service
+    env_file: .env
+    depends_on: [postgres, redis]
+    networks: [phantomgrid-net]
