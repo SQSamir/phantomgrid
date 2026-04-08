@@ -60,7 +60,10 @@ fn parse_role(s: &str) -> UserRole {
 
 fn hash_password(password: &str) -> anyhow::Result<String> {
     let salt = SaltString::generate(&mut OsRng);
-    Ok(Argon2::default().hash_password(password.as_bytes(), &salt)?.to_string())
+    let hashed = Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map_err(|e| anyhow::anyhow!("argon2 hash failed: {e}"))?;
+    Ok(hashed.to_string())
 }
 
 fn verify_password(password: &str, hash: &str) -> bool {
