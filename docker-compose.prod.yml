@@ -84,7 +84,7 @@ services:
     build: { context: ., dockerfile: services/honeypot-engine/Dockerfile }
     restart: always
     env_file: .env
-    ports: ["10022:10022", "18080:18080"]
+    ports: ["10022:10022", "10023:10023", "16379:16379", "18080:18080"]
     networks: [phantomgrid-net]
 
   event-processor:
