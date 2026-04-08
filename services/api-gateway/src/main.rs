@@ -74,7 +74,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/tenants/*path", any(proxy_tenants))
         .route("/api/v1/integrations/*path", any(proxy_integrations))
         .route("/ws/*path", any(proxy_realtime))
-        .layer(middleware::from_fn_with_state(state.clone(), gateway_mw))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
