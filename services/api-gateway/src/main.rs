@@ -24,6 +24,7 @@ struct AppState {
     integrations_base: String,
     realtime_base: String,
     rate_limit: Arc<Mutex<HashMap<String, (u32, Instant)>>>,
+    started_at: Instant,
 }
 
 #[tokio::main]
@@ -44,6 +45,7 @@ async fn main() -> anyhow::Result<()> {
         integrations_base: env::var("INTEGRATIONS_URL").unwrap_or_else(|_| "http://integrations:8089".into()),
         realtime_base: env::var("REALTIME_URL").unwrap_or_else(|_| "http://realtime:8085".into()),
         rate_limit: Arc::new(Mutex::new(HashMap::new())),
+        started_at: Instant::now(),
     };
 
     let app = Router::new()
@@ -57,6 +59,7 @@ async fn main() -> anyhow::Result<()> {
                 })
             }),
         )
+        .route("/metrics", get(metrics))
         .route("/api/v1/sensors/heartbeat", post(sensor_heartbeat))
         .route("/api/v1/auth/*path", any(proxy_auth))
         .route("/api/v1/decoys/*path", any(proxy_decoys))
@@ -106,7 +109,7 @@ async fn auth_mw(
         }
     }
 
-    if path.starts_with("/api/v1/auth/") || path == "/health" || path == "/api/v1/sensors/heartbeat" {
+    if path.starts_with("/api/v1/auth/") || path == "/health" || path == "/metrics" || path == "/api/v1/sensors/heartbeat" {
         req.headers_mut().insert("x-request-id", axum::http::HeaderValue::from_str(&Uuid::new_v4().to_string()).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
         return Ok(next.run(req).await);
     }
@@ -130,6 +133,16 @@ async fn auth_mw(
 
 async fn sensor_heartbeat() -> impl IntoResponse {
     Json(serde_json::json!({"ok": true}))
+}
+
+async fn metrics(State(st): State<AppState>) -> impl IntoResponse {
+    let uptime = st.started_at.elapsed().as_secs();
+    let rl_entries = st.rate_limit.lock().map(|m| m.len()).unwrap_or(0);
+    let body = format!(
+        "# TYPE api_gateway_uptime_seconds gauge\napi_gateway_uptime_seconds {}\n# TYPE api_gateway_rate_limit_entries gauge\napi_gateway_rate_limit_entries {}\n",
+        uptime, rl_entries
+    );
+    (StatusCode::OK, body)
 }
 
 async fn proxy_auth(State(st): State<AppState>, req: Request) -> impl IntoResponse {
