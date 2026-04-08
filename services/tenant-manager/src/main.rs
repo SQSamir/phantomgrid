@@ -19,6 +19,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
+        .route("/metrics", get(|| async { "# TYPE service_up gauge\nservice_up{service=\"tenant-manager\"} 1\n" }))
         .route("/tenants", get(list_tenants).post(create_tenant))
         .route("/tenants/{id}", get(get_tenant).delete(suspend_tenant))
         .with_state(AppState { pool });

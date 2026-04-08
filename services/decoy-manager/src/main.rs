@@ -30,6 +30,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/health", get(health))
+        .route("/metrics", get(|| async { "# TYPE service_up gauge\nservice_up{service=\"decoy-manager\"} 1\n" }))
         .route("/decoys", get(list_decoys).post(create_decoy))
         .route("/decoys/{id}", get(get_decoy).put(update_decoy).delete(delete_decoy))
         .route("/decoys/{id}/deploy", post(deploy_decoy))

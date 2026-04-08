@@ -32,6 +32,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
+        .route("/metrics", get(|| async { "# TYPE service_up gauge\nservice_up{service=\"realtime\"} 1\n" }))
         .route("/ws/events", get(ws_handler))
         .route("/ws/alerts", get(ws_handler))
         .with_state(Arc::new(st));

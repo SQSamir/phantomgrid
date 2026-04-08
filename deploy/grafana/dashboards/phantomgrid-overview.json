@@ -1,0 +1,60 @@
+{
+  "id": null,
+  "uid": "phantomgrid-overview",
+  "title": "PhantomGrid Overview",
+  "tags": ["phantomgrid", "security"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Events/sec (1m rate)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [{"expr": "sum(rate(phantomgrid_events_total[1m]))", "refId": "A"}]
+    },
+    {
+      "type": "stat",
+      "title": "Active attacker IPs (last 1h)",
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 0},
+      "targets": [{"expr": "count(count_over_time(phantomgrid_connections_total[1h]))", "refId": "A"}]
+    },
+    {
+      "type": "barchart",
+      "title": "Alerts by severity",
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 0},
+      "targets": [{"expr": "sum by (severity) (phantomgrid_alerts_total)", "refId": "A"}]
+    },
+    {
+      "type": "table",
+      "title": "Top 5 source countries",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 8},
+      "targets": [{"expr": "topk(5, sum by (country) (phantomgrid_events_country_total))", "refId": "A"}]
+    },
+    {
+      "type": "piechart",
+      "title": "Protocol breakdown",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 8},
+      "targets": [{"expr": "sum by (protocol) (phantomgrid_events_total)", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Kafka consumer lag",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 8},
+      "targets": [{"expr": "sum by (topic) (kafka_consumergroup_lag)", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Service memory usage",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "targets": [{"expr": "sum by (service) (process_resident_memory_bytes)", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "DB connection pool utilization",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "targets": [{"expr": "sum by (service) (db_pool_in_use_connections)", "refId": "A"}]
+    }
+  ]
+}

@@ -11,6 +11,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
+        .route("/metrics", get(|| async { "# TYPE service_up gauge\nservice_up{service=\"integrations\"} 1\n" }))
         .route("/api/v1/integrations/webhook/test", post(test_webhook));
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8089").await?;

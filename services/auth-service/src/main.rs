@@ -39,6 +39,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/health", get(health))
+        .route("/metrics", get(|| async { "# TYPE service_up gauge\nservice_up{service=\"auth-service\"} 1\n" }))
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
         .route("/auth/refresh", post(refresh))

@@ -68,6 +68,13 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    tokio::spawn(async move {
+        let app = Router::new().route("/metrics", get(|| async { "# TYPE service_up gauge\nservice_up{service=\"honeypot-engine\"} 1\n" }));
+        if let Ok(listener) = tokio::net::TcpListener::bind("0.0.0.0:9100").await {
+            let _ = axum::serve(listener, app).await;
+        }
+    });
+
     tokio::signal::ctrl_c().await?;
     Ok(())
 }

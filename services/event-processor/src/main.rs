@@ -1,4 +1,5 @@
 use anyhow::Context;
+use axum::{routing::get, Router};
 use phantomgrid_db::{connect, migrate};
 use phantomgrid_kafka::{consumer, parse_json, producer, publish_json};
 use phantomgrid_types::{EnrichedEvent, RawEvent};
@@ -20,6 +21,13 @@ async fn main() -> anyhow::Result<()> {
 
     let c = consumer("phantomgrid-event-processor", &brokers, &["events.raw"])?;
     let p = producer(&brokers)?;
+
+    tokio::spawn(async move {
+        let app = Router::new().route("/metrics", get(|| async { "# TYPE service_up gauge\nservice_up{service=\"event-processor\"} 1\n" }));
+        if let Ok(listener) = tokio::net::TcpListener::bind("0.0.0.0:9100").await {
+            let _ = axum::serve(listener, app).await;
+        }
+    });
 
     loop {
         let msg = c.recv().await?;

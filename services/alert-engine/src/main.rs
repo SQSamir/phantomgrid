@@ -20,7 +20,9 @@ async fn main() -> anyhow::Result<()> {
     let db = connect(&env::var("DATABASE_URL")?).await?;
     migrate(&db).await?;
 
-    let app = Router::new().route("/health", get(|| async { Json(json!({"status":"ok","service":"alert-engine"})) }));
+    let app = Router::new()
+        .route("/health", get(|| async { Json(json!({"status":"ok","service":"alert-engine"})) }))
+        .route("/metrics", get(|| async { "# TYPE service_up gauge\nservice_up{service=\"alert-engine\"} 1\n" }));
     tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind("0.0.0.0:8083").await.expect("bind alert-engine");
         axum::serve(listener, app).await.expect("serve alert-engine");
