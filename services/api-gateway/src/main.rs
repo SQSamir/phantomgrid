@@ -2,8 +2,7 @@ use axum::{
     body::Body,
     extract::State,
     http::{HeaderMap, HeaderValue, Request, StatusCode, Uri},
-    middleware::Next,
-    response::{IntoResponse, Response},
+    response::IntoResponse,
     routing::{any, get, post},
     Json, Router,
 };
@@ -94,45 +93,28 @@ async fn health() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok", service: "api-gateway", timestamp: Utc::now() })
 }
 
-async fn gateway_mw(
-    mut req: Request<Body>,
-    next: Next,
-) -> Response {
-    if let Err(err) = validate_request(&req).await {
-        return err.into_response();
-    }
+async fn enforce_security(req: &mut Request<Body>, auth_required: bool) -> Result<(), (StatusCode, Json<Value>)> {
+    validate_request(req).await?;
 
-    let path = req.uri().path().to_string();
-    let method = req.method().as_str().to_string();
     let request_id = Uuid::new_v4().to_string();
     if let Ok(v) = HeaderValue::from_str(&request_id) {
         req.headers_mut().insert("x-request-id", v);
     }
 
-    // auth endpoints: 10 req/min per IP
-    // other endpoints: 1000 req/min per tenant
-    if path.starts_with("/api/v1/auth/") {
+    if !auth_required {
         let ip = client_ip(req.headers()).unwrap_or_else(|| "unknown".to_string());
-        if let Err(err) = apply_rate_limit("auth", &ip, 10).await {
-            return err.into_response();
-        }
-        return next.run(req).await;
+        apply_rate_limit("auth", &ip, 10).await?;
+        return Ok(());
     }
 
-    if path == "/health" || path == "/metrics" || path == "/api/v1/sensors/heartbeat" {
-        return next.run(req).await;
-    }
+    let path = req.uri().path().to_string();
+    let method = req.method().as_str().to_string();
 
-    let auth = match verify_token(req.headers()).await {
-        Ok(v) => v,
-        Err(err) => return err.into_response(),
-    };
-    if let Err(err) = apply_rate_limit("api", &auth.tid, 1000).await {
-        return err.into_response();
-    }
+    let auth = verify_token(req.headers()).await?;
+    apply_rate_limit("api", &auth.tid, 1000).await?;
 
     if !rbac_allowed(&auth.role, &method, &path, &auth.tid) {
-        return (StatusCode::FORBIDDEN, Json(serde_json::json!({ "error": "forbidden" }))).into_response();
+        return Err((StatusCode::FORBIDDEN, Json(serde_json::json!({ "error": "forbidden" }))));
     }
 
     if let Ok(v) = HeaderValue::from_str(&auth.tid) {
@@ -142,7 +124,7 @@ async fn gateway_mw(
         req.headers_mut().insert("x-user-role", v);
     }
 
-    next.run(req).await
+    Ok(())
 }
 
 async fn verify_token(headers: &HeaderMap) -> Result<AuthContext, (StatusCode, Json<Value>)> {
@@ -299,39 +281,66 @@ async fn metrics(State(st): State<AppState>) -> impl IntoResponse {
     (StatusCode::OK, body)
 }
 
-async fn proxy_auth(State(st): State<AppState>, req: Request<Body>) -> impl IntoResponse {
+async fn proxy_auth(State(st): State<AppState>, mut req: Request<Body>) -> impl IntoResponse {
+    if let Err(err) = enforce_security(&mut req, false).await {
+        return err.into_response();
+    }
     proxy(st.auth_base, req, "/api/v1").await
 }
 
-async fn proxy_decoys(State(st): State<AppState>, req: Request<Body>) -> impl IntoResponse {
+async fn proxy_decoys(State(st): State<AppState>, mut req: Request<Body>) -> impl IntoResponse {
+    if let Err(err) = enforce_security(&mut req, true).await {
+        return err.into_response();
+    }
     proxy(st.decoy_base, req, "/api/v1").await
 }
 
-async fn proxy_events(State(st): State<AppState>, req: Request<Body>) -> impl IntoResponse {
+async fn proxy_events(State(st): State<AppState>, mut req: Request<Body>) -> impl IntoResponse {
+    if let Err(err) = enforce_security(&mut req, true).await {
+        return err.into_response();
+    }
     proxy(st.event_base, req, "/api/v1").await
 }
 
-async fn proxy_alerts(State(st): State<AppState>, req: Request<Body>) -> impl IntoResponse {
+async fn proxy_alerts(State(st): State<AppState>, mut req: Request<Body>) -> impl IntoResponse {
+    if let Err(err) = enforce_security(&mut req, true).await {
+        return err.into_response();
+    }
     proxy(st.alert_base, req, "/api/v1").await
 }
 
-async fn proxy_analytics(State(st): State<AppState>, req: Request<Body>) -> impl IntoResponse {
+async fn proxy_analytics(State(st): State<AppState>, mut req: Request<Body>) -> impl IntoResponse {
+    if let Err(err) = enforce_security(&mut req, true).await {
+        return err.into_response();
+    }
     proxy(st.analytics_base, req, "/api/v1").await
 }
 
-async fn proxy_mitre(State(st): State<AppState>, req: Request<Body>) -> impl IntoResponse {
+async fn proxy_mitre(State(st): State<AppState>, mut req: Request<Body>) -> impl IntoResponse {
+    if let Err(err) = enforce_security(&mut req, true).await {
+        return err.into_response();
+    }
     proxy(st.mitre_base, req, "/api/v1").await
 }
 
-async fn proxy_tenants(State(st): State<AppState>, req: Request<Body>) -> impl IntoResponse {
+async fn proxy_tenants(State(st): State<AppState>, mut req: Request<Body>) -> impl IntoResponse {
+    if let Err(err) = enforce_security(&mut req, true).await {
+        return err.into_response();
+    }
     proxy(st.tenant_base, req, "/api/v1").await
 }
 
-async fn proxy_integrations(State(st): State<AppState>, req: Request<Body>) -> impl IntoResponse {
+async fn proxy_integrations(State(st): State<AppState>, mut req: Request<Body>) -> impl IntoResponse {
+    if let Err(err) = enforce_security(&mut req, true).await {
+        return err.into_response();
+    }
     proxy(st.integrations_base, req, "/api/v1").await
 }
 
-async fn proxy_realtime(State(st): State<AppState>, req: Request<Body>) -> impl IntoResponse {
+async fn proxy_realtime(State(st): State<AppState>, mut req: Request<Body>) -> impl IntoResponse {
+    if let Err(err) = enforce_security(&mut req, true).await {
+        return err.into_response();
+    }
     proxy(st.realtime_base, req, "").await
 }
 
