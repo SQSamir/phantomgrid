@@ -141,7 +141,10 @@ async fn proxy_realtime(State(st): State<AppState>, req: Request) -> impl IntoRe
 
 async fn proxy(base: String, req: Request, strip_prefix: &str) -> impl IntoResponse {
     let client = reqwest::Client::new();
-    let method = req.method().clone();
+    let method = match req.method().as_str().parse::<reqwest::Method>() {
+        Ok(m) => m,
+        Err(_) => reqwest::Method::GET,
+    };
     let headers = req.headers().clone();
     let uri = req.uri().clone();
     let body = axum::body::to_bytes(req.into_body(), usize::MAX)
@@ -162,7 +165,8 @@ async fn proxy(base: String, req: Request, strip_prefix: &str) -> impl IntoRespo
 
     match outbound.send().await {
         Ok(r) => {
-            let status = r.status();
+            let status = axum::http::StatusCode::from_u16(r.status().as_u16())
+                .unwrap_or(axum::http::StatusCode::BAD_GATEWAY);
             let bytes = r.bytes().await.unwrap_or_default();
             (status, bytes).into_response()
         }
@@ -175,7 +179,9 @@ fn copy_headers(headers: HeaderMap, mut req: reqwest::RequestBuilder) -> reqwest
         if k.as_str().eq_ignore_ascii_case("host") || k.as_str().eq_ignore_ascii_case("content-length") {
             continue;
         }
-        req = req.header(k, v);
+        if let Ok(vs) = v.to_str() {
+            req = req.header(k.as_str(), vs);
+        }
     }
     req
 }
