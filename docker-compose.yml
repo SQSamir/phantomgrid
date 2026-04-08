@@ -152,3 +152,39 @@ services:
       dockerfile: Dockerfile
     ports: ["8084:8084"]
     networks: [phantomgrid-net]
+
+  tenant-manager:
+    build:
+      context: .
+      dockerfile: services/tenant-manager/Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    depends_on: [postgres]
+    ports: ["8088:8088"]
+    networks: [phantomgrid-net]
+
+  notifications:
+    build:
+      context: ./services-python/notifications
+      dockerfile: Dockerfile
+    ports: ["8087:8087"]
+    networks: [phantomgrid-net]
+
+  sensor:
+    build:
+      context: .
+      dockerfile: services/sensor/Dockerfile
+    env_file: .env
+    environment:
+      SENSOR_GATEWAY_URL: http://api-gateway:8080/api/v1/sensors/heartbeat
+      SENSOR_NAME: sensor-local
+    depends_on: [api-gateway]
+    networks: [phantomgrid-net]
+
+  integrations:
+    build:
+      context: .
+      dockerfile: services/integrations/Dockerfile
+    ports: ["8089:8089"]
+    networks: [phantomgrid-net]

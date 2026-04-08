@@ -13,7 +13,8 @@ members = [
   "services/realtime",
   "services/analytics",
   "services/tenant-manager",
-  "services/sensor"
+  "services/sensor",
+  "services/integrations"
 ]
 
 [workspace.dependencies]
