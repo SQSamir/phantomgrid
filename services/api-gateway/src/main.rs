@@ -11,7 +11,7 @@ use jsonwebtoken::{decode, DecodingKey, Validation};
 use phantomgrid_types::{HealthResponse, JwtClaims, UserRole};
 use redis::AsyncCommands;
 use serde_json::Value;
-use std::{env, fs, net::IpAddr, str::FromStr, time::Instant};
+use std::{env, fs, net::IpAddr, str::FromStr, sync::OnceLock, time::Instant};
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -30,6 +30,9 @@ struct AppState {
     started_at: Instant,
 }
 
+static DECODING_KEY: OnceLock<DecodingKey> = OnceLock::new();
+static REDIS_CLIENT: OnceLock<redis::Client> = OnceLock::new();
+
 #[derive(Clone)]
 struct AuthContext {
     tid: String,
@@ -45,8 +48,13 @@ async fn main() -> anyhow::Result<()> {
     let pub_key = fs::read(env::var("JWT_PUBLIC_KEY_PATH")?)?;
     let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://redis:6379".into());
 
+    let dec = DecodingKey::from_rsa_pem(&pub_key)?;
+    let _ = DECODING_KEY.set(dec.clone());
+    let rcli = redis::Client::open(redis_url)?;
+    let _ = REDIS_CLIENT.set(rcli.clone());
+
     let state = AppState {
-        dec: DecodingKey::from_rsa_pem(&pub_key)?,
+        dec,
         auth_base: env::var("AUTH_SERVICE_URL").unwrap_or_else(|_| "http://auth-service:8081".into()),
         decoy_base: env::var("DECOY_MANAGER_URL").unwrap_or_else(|_| "http://decoy-manager:8082".into()),
         event_base: env::var("EVENT_STORE_URL").unwrap_or_else(|_| "http://event-processor:8083".into()),
@@ -56,7 +64,7 @@ async fn main() -> anyhow::Result<()> {
         tenant_base: env::var("TENANT_MANAGER_URL").unwrap_or_else(|_| "http://tenant-manager:8088".into()),
         integrations_base: env::var("INTEGRATIONS_URL").unwrap_or_else(|_| "http://integrations:8089".into()),
         realtime_base: env::var("REALTIME_URL").unwrap_or_else(|_| "http://realtime:8085".into()),
-        redis_client: redis::Client::open(redis_url)?,
+        redis_client: rcli,
         started_at: Instant::now(),
     };
 
@@ -74,6 +82,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/tenants/*path", any(proxy_tenants))
         .route("/api/v1/integrations/*path", any(proxy_integrations))
         .route("/ws/*path", any(proxy_realtime))
+        .layer(middleware::from_fn(gateway_mw))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
@@ -86,7 +95,6 @@ async fn health() -> Json<HealthResponse> {
 }
 
 async fn gateway_mw(
-    st: AppState,
     mut req: Request,
     next: Next,
 ) -> Response {
@@ -105,7 +113,7 @@ async fn gateway_mw(
     // other endpoints: 1000 req/min per tenant
     if path.starts_with("/api/v1/auth/") {
         let ip = client_ip(req.headers()).unwrap_or_else(|| "unknown".to_string());
-        if let Err(err) = apply_rate_limit(&st, "auth", &ip, 10).await {
+        if let Err(err) = apply_rate_limit("auth", &ip, 10).await {
             return err.into_response();
         }
         return next.run(req).await;
@@ -115,11 +123,11 @@ async fn gateway_mw(
         return next.run(req).await;
     }
 
-    let auth = match verify_token(&st, req.headers()).await {
+    let auth = match verify_token(req.headers()).await {
         Ok(v) => v,
         Err(err) => return err.into_response(),
     };
-    if let Err(err) = apply_rate_limit(&st, "api", &auth.tid, 1000).await {
+    if let Err(err) = apply_rate_limit("api", &auth.tid, 1000).await {
         return err.into_response();
     }
 
@@ -137,14 +145,18 @@ async fn gateway_mw(
     next.run(req).await
 }
 
-async fn verify_token(st: &AppState, headers: &HeaderMap) -> Result<AuthContext, (StatusCode, Json<Value>)> {
+async fn verify_token(headers: &HeaderMap) -> Result<AuthContext, (StatusCode, Json<Value>)> {
     let header = headers.get("authorization").and_then(|h| h.to_str().ok()).unwrap_or("");
     let token = match header.strip_prefix("Bearer ") {
         Some(v) => v,
         None => return Err((StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error":"missing bearer"}))))
     };
 
-    let decoded = decode::<JwtClaims>(token, &st.dec, &Validation::new(jsonwebtoken::Algorithm::RS256))
+    let dec = DECODING_KEY
+        .get()
+        .ok_or((StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error":"jwt key unavailable"}))))?;
+
+    let decoded = decode::<JwtClaims>(token, dec, &Validation::new(jsonwebtoken::Algorithm::RS256))
         .map_err(|_| (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error":"invalid token"}))))?;
 
     let now = Utc::now().timestamp() as usize;
@@ -155,7 +167,10 @@ async fn verify_token(st: &AppState, headers: &HeaderMap) -> Result<AuthContext,
     // optional jti check (supports both jti and session-jti headers fallback)
     let jti = headers.get("x-jti").and_then(|h| h.to_str().ok()).map(ToOwned::to_owned);
     if let Some(ref jti_val) = jti {
-        let mut con = st.redis_client.get_multiplexed_async_connection().await
+        let client = REDIS_CLIENT
+            .get()
+            .ok_or((StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error":"redis unavailable"}))))?;
+        let mut con = client.get_multiplexed_async_connection().await
             .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error":"redis unavailable"}))))?;
         let key = format!("jwt:blacklist:{jti_val}");
         let blacklisted: bool = con.exists(key).await.unwrap_or(false);
@@ -171,10 +186,13 @@ async fn verify_token(st: &AppState, headers: &HeaderMap) -> Result<AuthContext,
     })
 }
 
-async fn apply_rate_limit(st: &AppState, t: &str, identifier: &str, max_per_min: i64) -> Result<(), (StatusCode, Json<Value>)> {
+async fn apply_rate_limit(t: &str, identifier: &str, max_per_min: i64) -> Result<(), (StatusCode, Json<Value>)> {
     let minute = Utc::now().timestamp() / 60;
     let key = format!("rl:{t}:{identifier}:{minute}");
-    let mut con = st.redis_client.get_multiplexed_async_connection().await
+    let client = REDIS_CLIENT
+        .get()
+        .ok_or((StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error":"redis unavailable"}))))?;
+    let mut con = client.get_multiplexed_async_connection().await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error":"redis unavailable"}))))?;
 
     let cnt: i64 = con.incr(&key, 1).await.unwrap_or(1);
