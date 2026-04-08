@@ -17,6 +17,13 @@ cp .env.example .env
 docker compose -f docker-compose.prod.yml up -d --build
 ```
 
+### prod.infrahub.cz routing
+
+- Frontend target: `127.0.0.1:3000`
+- API/WS target: `127.0.0.1:8080`
+- Ready-to-use Caddy block:
+  - `deploy/CADDY_PROD_INFRAHUB.CADDYFILE`
+
 ## Services
 
 - api-gateway: `:8080`
