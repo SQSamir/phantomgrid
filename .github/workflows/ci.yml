@@ -1,0 +1,29 @@
+name: ci
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+
+jobs:
+  compose-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare env
+        run: cp .env.example .env
+      - name: Validate compose (dev)
+        run: docker compose -f docker-compose.yml config -q
+      - name: Validate compose (prod)
+        run: docker compose -f docker-compose.prod.yml config -q
+
+  rust-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Check workspace
+        run: cargo check --workspace
