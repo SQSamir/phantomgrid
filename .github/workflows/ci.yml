@@ -28,6 +28,6 @@ jobs:
       - name: Install native build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config cmake make g++ libssl-dev libcurl4-openssl-dev libsasl2-dev zlib1g-dev libzstd-dev
+          sudo apt-get install -y pkg-config cmake make g++ libssl-dev libcurl4-openssl-dev libsasl2-dev zlib1g-dev libzstd-dev librdkafka-dev
       - name: Check workspace
         run: cargo check --workspace
