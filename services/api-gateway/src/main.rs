@@ -87,7 +87,7 @@ async fn health() -> Json<HealthResponse> {
 }
 
 async fn gateway_mw(
-    State(st): State<AppState>,
+    st: AppState,
     mut req: Request,
     next: Next,
 ) -> Response {
