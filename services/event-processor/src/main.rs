@@ -2,7 +2,6 @@ use anyhow::Context;
 use phantomgrid_db::{connect, migrate};
 use phantomgrid_kafka::{consumer, parse_json, producer, publish_json};
 use phantomgrid_types::{EnrichedEvent, RawEvent};
-use rdkafka::consumer::Consumer;
 use redis::AsyncCommands;
 use sqlx::PgPool;
 use std::{env, net::IpAddr, str::FromStr};
@@ -63,7 +62,7 @@ async fn is_duplicate(redis_client: &redis::Client, raw: &RawEvent) -> anyhow::R
 }
 
 async fn enrich_ip(ip: &str) -> (Option<String>, Option<String>, Option<String>) {
-    if IpAddr::from_str(ip).map(|v| v.is_private()).unwrap_or(true) {
+    if is_private_ip(ip) {
         return (Some("Private".into()), Some("N/A".into()), None);
     }
 
@@ -78,6 +77,14 @@ async fn enrich_ip(ip: &str) -> (Option<String>, Option<String>, Option<String>)
     let asn = Some("AS-UNKNOWN".into());
 
     (country, asn, rdns)
+}
+
+fn is_private_ip(ip: &str) -> bool {
+    match IpAddr::from_str(ip) {
+        Ok(IpAddr::V4(v4)) => v4.is_private() || v4.is_loopback() || v4.is_link_local(),
+        Ok(IpAddr::V6(v6)) => v6.is_loopback() || v6.is_unspecified() || v6.is_unique_local(),
+        Err(_) => true,
+    }
 }
 
 fn score_event(raw: &RawEvent, country: Option<&str>, asn: Option<&str>) -> i32 {
@@ -100,15 +107,15 @@ fn score_event(raw: &RawEvent, country: Option<&str>, asn: Option<&str>) -> i32 
 
 async fn persist_event(db: &PgPool, raw: &RawEvent, enriched: &EnrichedEvent) {
     let _ = sqlx::query(
-        "INSERT INTO events (id,tenant_id,decoy_id,session_id,source_ip,source_port,destination_ip,destination_port,protocol,event_type,severity,raw_data,enrichment,tags,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
+        "INSERT INTO events (id,tenant_id,decoy_id,session_id,source_ip,source_port,destination_ip,destination_port,protocol,event_type,severity,raw_data,enrichment,tags,created_at) VALUES ($1,$2,$3,$4,$5::inet,$6,$7::inet,$8,$9,$10,$11,$12,$13,$14,$15)",
     )
     .bind(raw.event_id)
     .bind(raw.tenant_id)
     .bind(raw.decoy_id)
     .bind(raw.session_id)
-    .bind(raw.source_ip.parse::<IpAddr>().ok())
+    .bind(raw.source_ip.parse::<IpAddr>().ok().map(|_| raw.source_ip.clone()))
     .bind(raw.source_port as i32)
-    .bind(raw.destination_ip.parse::<IpAddr>().ok())
+    .bind(raw.destination_ip.parse::<IpAddr>().ok().map(|_| raw.destination_ip.clone()))
     .bind(raw.destination_port as i32)
     .bind(&raw.protocol)
     .bind(&raw.decoy_type)
