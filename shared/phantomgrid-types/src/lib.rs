@@ -91,3 +91,6 @@ pub struct Decoy {
     pub port: Option<i32>,
     pub tags: Vec<String>,
 }
+
+#[cfg(test)]
+mod tests;

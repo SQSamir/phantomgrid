@@ -1,5 +1,8 @@
 import { ReactNode, useEffect, useMemo, useState } from 'react'
 import { apiGet } from '../api/client'
+import { useWebSocket } from '../hooks/useWebSocket'
+import LiveEventFeed from '../components/dashboard/LiveEventFeed'
+import AttackMap from '../components/dashboard/AttackMap'
 
 type Overview = {
   active_decoys: number
@@ -23,6 +26,7 @@ export default function Dashboard() {
   const [protocols, setProtocols] = useState<ProtocolItem[]>([])
   const [geo, setGeo] = useState<GeoItem[]>([])
   const [error, setError] = useState<string | null>(null)
+  const { events, connected } = useWebSocket()
 
   const tenantId = useMemo(() => new URLSearchParams(window.location.search).get('tenant_id') || '', [])
 
@@ -61,7 +65,7 @@ export default function Dashboard() {
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
-      <h1 style={{ margin: 0 }}>Dashboard</h1>
+      <h1 style={{ margin: 0 }}>Dashboard {connected ? '🟢' : '🔴'}</h1>
       {error && <div style={{ color: '#ff8c8c' }}>Data fetch error: {error}</div>}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(120px, 1fr))', gap: 12 }}>
@@ -103,6 +107,11 @@ export default function Dashboard() {
             {geo.length === 0 && <li>No data</li>}
           </ul>
         </Panel>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 12 }}>
+        <LiveEventFeed events={events} />
+        <AttackMap events={events} />
       </div>
     </div>
   )

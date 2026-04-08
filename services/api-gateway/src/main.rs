@@ -1,15 +1,19 @@
 use axum::{
+    body::Body,
     extract::{Request, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode, Uri},
     middleware::{self, Next},
     response::IntoResponse,
     routing::{any, get, post},
     Json, Router,
 };
+use chrono::Utc;
 use jsonwebtoken::{decode, DecodingKey, Validation};
+use phantomgrid_types::{HealthResponse, JwtClaims, UserRole};
+use redis::AsyncCommands;
+use serde_json::Value;
+use std::{env, fs, net::IpAddr, str::FromStr, time::Instant};
 use uuid::Uuid;
-use phantomgrid_types::{HealthResponse, JwtClaims};
-use std::{collections::HashMap, env, fs, sync::{Arc, Mutex}, time::{Duration, Instant}};
 
 #[derive(Clone)]
 struct AppState {
@@ -23,8 +27,15 @@ struct AppState {
     tenant_base: String,
     integrations_base: String,
     realtime_base: String,
-    rate_limit: Arc<Mutex<HashMap<String, (u32, Instant)>>>,
+    redis_client: redis::Client,
     started_at: Instant,
+}
+
+#[derive(Clone)]
+struct AuthContext {
+    tid: String,
+    role: String,
+    jti: Option<String>,
 }
 
 #[tokio::main]
@@ -33,6 +44,8 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().json().init();
 
     let pub_key = fs::read(env::var("JWT_PUBLIC_KEY_PATH")?)?;
+    let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://redis:6379".into());
+
     let state = AppState {
         dec: DecodingKey::from_rsa_pem(&pub_key)?,
         auth_base: env::var("AUTH_SERVICE_URL").unwrap_or_else(|_| "http://auth-service:8081".into()),
@@ -44,21 +57,12 @@ async fn main() -> anyhow::Result<()> {
         tenant_base: env::var("TENANT_MANAGER_URL").unwrap_or_else(|_| "http://tenant-manager:8088".into()),
         integrations_base: env::var("INTEGRATIONS_URL").unwrap_or_else(|_| "http://integrations:8089".into()),
         realtime_base: env::var("REALTIME_URL").unwrap_or_else(|_| "http://realtime:8085".into()),
-        rate_limit: Arc::new(Mutex::new(HashMap::new())),
+        redis_client: redis::Client::open(redis_url)?,
         started_at: Instant::now(),
     };
 
     let app = Router::new()
-        .route(
-            "/health",
-            get(|| async {
-                Json(HealthResponse {
-                    status: "ok",
-                    service: "api-gateway",
-                    timestamp: chrono::Utc::now(),
-                })
-            }),
-        )
+        .route("/health", get(health))
         .route("/metrics", get(metrics))
         .route("/api/v1/sensors/heartbeat", post(sensor_heartbeat))
         .route("/api/v1/auth/*path", any(proxy_auth))
@@ -71,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/tenants/*path", any(proxy_tenants))
         .route("/api/v1/integrations/*path", any(proxy_integrations))
         .route("/ws/*path", any(proxy_realtime))
-        .layer(middleware::from_fn_with_state(state.clone(), auth_mw))
+        .layer(middleware::from_fn_with_state(state.clone(), gateway_mw))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
@@ -79,56 +83,182 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn auth_mw(
+async fn health() -> Json<HealthResponse> {
+    Json(HealthResponse { status: "ok", service: "api-gateway", timestamp: Utc::now() })
+}
+
+async fn gateway_mw(
     State(st): State<AppState>,
     mut req: Request,
     next: Next,
-) -> Result<impl IntoResponse, StatusCode> {
-    let path = req.uri().path();
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    validate_request(&req).await?;
 
-    // basic per-IP fixed-window rate limit (120 req/min)
-    let client_id = req
-        .headers()
-        .get("cf-connecting-ip")
-        .or_else(|| req.headers().get("x-forwarded-for"))
-        .and_then(|h| h.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-
-    {
-        let mut rl = st.rate_limit.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let now = Instant::now();
-        let entry = rl.entry(client_id).or_insert((0, now));
-        if now.duration_since(entry.1) > Duration::from_secs(60) {
-            *entry = (0, now);
-        }
-        entry.0 += 1;
-        if entry.0 > 120 {
-            return Err(StatusCode::TOO_MANY_REQUESTS);
-        }
+    let path = req.uri().path().to_string();
+    let method = req.method().as_str().to_string();
+    let request_id = Uuid::new_v4().to_string();
+    if let Ok(v) = HeaderValue::from_str(&request_id) {
+        req.headers_mut().insert("x-request-id", v);
     }
 
-    if path.starts_with("/api/v1/auth/") || path == "/health" || path == "/metrics" || path == "/api/v1/sensors/heartbeat" {
-        req.headers_mut().insert("x-request-id", axum::http::HeaderValue::from_str(&Uuid::new_v4().to_string()).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
+    // auth endpoints: 10 req/min per IP
+    // other endpoints: 1000 req/min per tenant
+    if path.starts_with("/api/v1/auth/") {
+        let ip = client_ip(req.headers()).unwrap_or_else(|| "unknown".to_string());
+        apply_rate_limit(&st, "auth", &ip, 10).await?;
         return Ok(next.run(req).await);
     }
-    let header = req
-        .headers()
-        .get("authorization")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    let token = header
-        .strip_prefix("Bearer ")
-        .ok_or(StatusCode::UNAUTHORIZED)?;
-    decode::<JwtClaims>(
-        token,
-        &st.dec,
-        &Validation::new(jsonwebtoken::Algorithm::RS256),
-    )
-    .map_err(|_| StatusCode::UNAUTHORIZED)?;
-    req.headers_mut().insert("x-request-id", axum::http::HeaderValue::from_str(&Uuid::new_v4().to_string()).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
+
+    if path == "/health" || path == "/metrics" || path == "/api/v1/sensors/heartbeat" {
+        return Ok(next.run(req).await);
+    }
+
+    let auth = verify_token(&st, req.headers()).await?;
+    apply_rate_limit(&st, "api", &auth.tid, 1000).await?;
+
+    if !rbac_allowed(&auth.role, &method, &path, &auth.tid) {
+        return Err((StatusCode::FORBIDDEN, Json(serde_json::json!({ "error": "forbidden" }))));
+    }
+
+    if let Ok(v) = HeaderValue::from_str(&auth.tid) {
+        req.headers_mut().insert("x-tenant-id", v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&auth.role) {
+        req.headers_mut().insert("x-user-role", v);
+    }
+
     Ok(next.run(req).await)
+}
+
+async fn verify_token(st: &AppState, headers: &HeaderMap) -> Result<AuthContext, (StatusCode, Json<Value>)> {
+    let header = headers.get("authorization").and_then(|h| h.to_str().ok()).unwrap_or("");
+    let token = match header.strip_prefix("Bearer ") {
+        Some(v) => v,
+        None => return Err((StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error":"missing bearer"}))))
+    };
+
+    let decoded = decode::<JwtClaims>(token, &st.dec, &Validation::new(jsonwebtoken::Algorithm::RS256))
+        .map_err(|_| (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error":"invalid token"}))))?;
+
+    let now = Utc::now().timestamp() as usize;
+    if decoded.claims.exp <= now {
+        return Err((StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error":"token expired"}))));
+    }
+
+    // optional jti check (supports both jti and session-jti headers fallback)
+    let jti = headers.get("x-jti").and_then(|h| h.to_str().ok()).map(ToOwned::to_owned);
+    if let Some(ref jti_val) = jti {
+        let mut con = st.redis_client.get_multiplexed_async_connection().await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error":"redis unavailable"}))))?;
+        let key = format!("jwt:blacklist:{jti_val}");
+        let blacklisted: bool = con.exists(key).await.unwrap_or(false);
+        if blacklisted {
+            return Err((StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error":"revoked token"}))));
+        }
+    }
+
+    Ok(AuthContext {
+        tid: decoded.claims.tenant_id.to_string(),
+        role: role_to_str(&decoded.claims.role).to_string(),
+        jti,
+    })
+}
+
+async fn apply_rate_limit(st: &AppState, t: &str, identifier: &str, max_per_min: i64) -> Result<(), (StatusCode, Json<Value>)> {
+    let minute = Utc::now().timestamp() / 60;
+    let key = format!("rl:{t}:{identifier}:{minute}");
+    let mut con = st.redis_client.get_multiplexed_async_connection().await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error":"redis unavailable"}))))?;
+
+    let cnt: i64 = con.incr(&key, 1).await.unwrap_or(1);
+    let _: () = con.expire(&key, 120).await.unwrap_or(());
+
+    if cnt > max_per_min {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({"error":"rate limit exceeded","retry_after":60})),
+        ));
+    }
+    Ok(())
+}
+
+fn role_to_str(role: &UserRole) -> &'static str {
+    match role {
+        UserRole::SuperAdmin => "super_admin",
+        UserRole::TenantAdmin => "tenant_admin",
+        UserRole::Analyst => "analyst",
+        UserRole::Readonly => "readonly",
+    }
+}
+
+fn rbac_allowed(role: &str, method: &str, path: &str, _tenant_id: &str) -> bool {
+    if role == "super_admin" {
+        return true;
+    }
+    if role == "readonly" {
+        return method.eq_ignore_ascii_case("GET");
+    }
+    if role == "tenant_admin" {
+        return true;
+    }
+    // analyst
+    let is_read = method.eq_ignore_ascii_case("GET");
+    if is_read {
+        return true;
+    }
+
+    if path.starts_with("/api/v1/decoys/") || path == "/api/v1/decoys" {
+        return true;
+    }
+    if path.starts_with("/api/v1/alerts/") && (method == "PATCH" || method == "POST") {
+        return true;
+    }
+    false
+}
+
+async fn validate_request(req: &Request) -> Result<(), (StatusCode, Json<Value>)> {
+    if let Some(q) = req.uri().query() {
+        for pair in q.split('&') {
+            if let Some((k, v)) = pair.split_once('=') {
+                if k == "limit" {
+                    if let Ok(limit) = v.parse::<u32>() {
+                        if limit > 1000 {
+                            return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"limit exceeds 1000"}))));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    validate_path_uuid(req.uri())?;
+    Ok(())
+}
+
+fn validate_path_uuid(uri: &Uri) -> Result<(), (StatusCode, Json<Value>)> {
+    for seg in uri.path().split('/') {
+        if seg.len() == 36 && seg.contains('-') {
+            if Uuid::parse_str(seg).is_err() {
+                return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"invalid uuid in path"}))));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn client_ip(headers: &HeaderMap) -> Option<String> {
+    if let Some(v) = headers.get("cf-connecting-ip").and_then(|h| h.to_str().ok()) {
+        return Some(v.to_string());
+    }
+    if let Some(v) = headers.get("x-forwarded-for").and_then(|h| h.to_str().ok()) {
+        return v.split(',').next().map(|s| s.trim().to_string());
+    }
+    if let Some(v) = headers.get("x-real-ip").and_then(|h| h.to_str().ok()) {
+        if IpAddr::from_str(v).is_ok() {
+            return Some(v.to_string());
+        }
+    }
+    None
 }
 
 async fn sensor_heartbeat() -> impl IntoResponse {
@@ -137,10 +267,9 @@ async fn sensor_heartbeat() -> impl IntoResponse {
 
 async fn metrics(State(st): State<AppState>) -> impl IntoResponse {
     let uptime = st.started_at.elapsed().as_secs();
-    let rl_entries = st.rate_limit.lock().map(|m| m.len()).unwrap_or(0);
     let body = format!(
-        "# TYPE api_gateway_uptime_seconds gauge\napi_gateway_uptime_seconds {}\n# TYPE api_gateway_rate_limit_entries gauge\napi_gateway_rate_limit_entries {}\n",
-        uptime, rl_entries
+        "# TYPE api_gateway_uptime_seconds gauge\napi_gateway_uptime_seconds {}\n",
+        uptime
     );
     (StatusCode::OK, body)
 }
@@ -183,15 +312,14 @@ async fn proxy_realtime(State(st): State<AppState>, req: Request) -> impl IntoRe
 
 async fn proxy(base: String, req: Request, strip_prefix: &str) -> impl IntoResponse {
     let client = reqwest::Client::new();
-    let method = match req.method().as_str().parse::<reqwest::Method>() {
-        Ok(m) => m,
-        Err(_) => reqwest::Method::GET,
-    };
+    let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes()).unwrap_or(reqwest::Method::GET);
     let headers = req.headers().clone();
     let uri = req.uri().clone();
-    let body = axum::body::to_bytes(req.into_body(), usize::MAX)
-        .await
-        .unwrap_or_default();
+
+    let body = match axum::body::to_bytes(req.into_body(), usize::MAX).await {
+        Ok(b) => b,
+        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    };
 
     let mut path = uri.path().to_string();
     if !strip_prefix.is_empty() {
@@ -207,9 +335,11 @@ async fn proxy(base: String, req: Request, strip_prefix: &str) -> impl IntoRespo
 
     match outbound.send().await {
         Ok(r) => {
-            let status = axum::http::StatusCode::from_u16(r.status().as_u16())
-                .unwrap_or(axum::http::StatusCode::BAD_GATEWAY);
-            let bytes = r.bytes().await.unwrap_or_default();
+            let status = StatusCode::from_u16(r.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+            let bytes = match r.bytes().await {
+                Ok(v) => v,
+                Err(_) => return StatusCode::BAD_GATEWAY.into_response(),
+            };
             (status, bytes).into_response()
         }
         Err(_) => StatusCode::BAD_GATEWAY.into_response(),
@@ -217,7 +347,7 @@ async fn proxy(base: String, req: Request, strip_prefix: &str) -> impl IntoRespo
 }
 
 fn copy_headers(headers: HeaderMap, mut req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-    for (k, v) in headers.iter() {
+    for (k, v) in &headers {
         if k.as_str().eq_ignore_ascii_case("host") || k.as_str().eq_ignore_ascii_case("content-length") {
             continue;
         }

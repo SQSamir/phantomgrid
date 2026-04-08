@@ -8,6 +8,9 @@ use sqlx::PgPool;
 use std::env;
 use uuid::Uuid;
 
+#[cfg(test)]
+mod tests;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();

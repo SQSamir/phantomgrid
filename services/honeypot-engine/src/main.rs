@@ -6,6 +6,9 @@ use std::{env, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Clone)]
 struct AppState {
     producer: rdkafka::producer::FutureProducer,

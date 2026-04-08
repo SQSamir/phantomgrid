@@ -10,6 +10,9 @@ use sqlx::PgPool;
 use std::{env, fs};
 use uuid::Uuid;
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Clone)]
 struct AppState { pool: PgPool, enc: EncodingKey, dec: DecodingKey }
 

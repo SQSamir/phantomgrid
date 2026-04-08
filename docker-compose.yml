@@ -15,12 +15,22 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-phantomgrid}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
     volumes: ["pg_data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-phantomgrid} -d ${POSTGRES_DB:-phantomgrid}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks: [phantomgrid-net]
 
   redis:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
     volumes: ["redis_data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
     networks: [phantomgrid-net]
 
   zookeeper:
@@ -31,7 +41,9 @@ services:
 
   kafka:
     image: confluentinc/cp-kafka:7.6.0
-    depends_on: [zookeeper]
+    depends_on:
+      zookeeper:
+        condition: service_started
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
@@ -39,11 +51,21 @@ services:
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
     volumes: ["kafka_data:/var/lib/kafka/data"]
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
     networks: [phantomgrid-net]
 
   clickhouse:
     image: clickhouse/clickhouse-server:latest
     volumes: ["clickhouse_data:/var/lib/clickhouse"]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks: [phantomgrid-net]
 
   minio:
@@ -53,6 +75,11 @@ services:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-change_me}
     volumes: ["minio_data:/data"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks: [phantomgrid-net]
 
   api-gateway:
@@ -66,7 +93,9 @@ services:
     volumes:
       - ./secrets/jwt_public.pem:/run/secrets/jwt_public.pem:ro
     ports: ["8080:8080"]
-    depends_on: [auth-service]
+    depends_on:
+      auth-service:
+        condition: service_healthy
     networks: [phantomgrid-net]
 
   auth-service:
@@ -80,9 +109,12 @@ services:
     volumes:
       - ./secrets/jwt_private.pem:/run/secrets/jwt_private.pem:ro
       - ./secrets/jwt_public.pem:/run/secrets/jwt_public.pem:ro
-    depends_on: [postgres, redis]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks: [phantomgrid-net]
-
 
   decoy-manager:
     build:
@@ -91,7 +123,11 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: ${DATABASE_URL}
-    depends_on: [postgres]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
     networks: [phantomgrid-net]
 
   honeypot-engine:
@@ -101,7 +137,9 @@ services:
     env_file: .env
     environment:
       KAFKA_BROKERS: ${KAFKA_BROKERS}
-    depends_on: [kafka]
+    depends_on:
+      kafka:
+        condition: service_healthy
     ports: ["10022:10022", "10023:10023", "16379:16379", "18080:18080"]
     networks: [phantomgrid-net]
 
@@ -113,7 +151,13 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       KAFKA_BROKERS: ${KAFKA_BROKERS}
-    depends_on: [postgres, kafka]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
     networks: [phantomgrid-net]
 
   realtime:
@@ -123,7 +167,9 @@ services:
     env_file: .env
     environment:
       KAFKA_BROKERS: ${KAFKA_BROKERS}
-    depends_on: [kafka]
+    depends_on:
+      kafka:
+        condition: service_healthy
     ports: ["8085:8085"]
     networks: [phantomgrid-net]
 
@@ -132,6 +178,9 @@ services:
       context: .
       dockerfile: services/analytics/Dockerfile
     env_file: .env
+    depends_on:
+      clickhouse:
+        condition: service_healthy
     ports: ["8086:8086"]
     networks: [phantomgrid-net]
 
@@ -142,13 +191,20 @@ services:
     env_file: .env
     environment:
       KAFKA_BROKERS: ${KAFKA_BROKERS}
-    depends_on: [kafka]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     networks: [phantomgrid-net]
 
   mitre-mapper:
     build:
       context: ./services-python/mitre-mapper
       dockerfile: Dockerfile
+    depends_on:
+      clickhouse:
+        condition: service_healthy
     ports: ["8084:8084"]
     networks: [phantomgrid-net]
 
@@ -159,7 +215,9 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: ${DATABASE_URL}
-    depends_on: [postgres]
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports: ["8088:8088"]
     networks: [phantomgrid-net]
 
@@ -167,6 +225,9 @@ services:
     build:
       context: ./services-python/notifications
       dockerfile: Dockerfile
+    depends_on:
+      kafka:
+        condition: service_healthy
     ports: ["8087:8087"]
     networks: [phantomgrid-net]
 
@@ -178,20 +239,29 @@ services:
     environment:
       SENSOR_GATEWAY_URL: http://api-gateway:8080/api/v1/sensors/heartbeat
       SENSOR_NAME: sensor-local
-    depends_on: [api-gateway]
+    depends_on:
+      api-gateway:
+        condition: service_started
     networks: [phantomgrid-net]
 
   integrations:
     build:
       context: .
       dockerfile: services/integrations/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
     ports: ["8089:8089"]
     networks: [phantomgrid-net]
-
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+    depends_on:
+      api-gateway:
+        condition: service_started
     ports: ["3000:3000"]
     networks: [phantomgrid-net]
