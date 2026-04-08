@@ -5,10 +5,11 @@ edition = "2021"
 
 [dependencies]
 anyhow.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
-tokio.workspace = true
 axum.workspace = true
+tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dotenvy.workspace = true
+reqwest = { version = "0.11", features = ["json", "rustls-tls"] }

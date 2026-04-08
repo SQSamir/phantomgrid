@@ -116,3 +116,39 @@ services:
       KAFKA_BROKERS: ${KAFKA_BROKERS}
     depends_on: [postgres, kafka]
     networks: [phantomgrid-net]
+
+  realtime:
+    build:
+      context: .
+      dockerfile: services/realtime/Dockerfile
+    env_file: .env
+    environment:
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+    depends_on: [kafka]
+    ports: ["8085:8085"]
+    networks: [phantomgrid-net]
+
+  analytics:
+    build:
+      context: .
+      dockerfile: services/analytics/Dockerfile
+    env_file: .env
+    ports: ["8086:8086"]
+    networks: [phantomgrid-net]
+
+  alert-engine:
+    build:
+      context: .
+      dockerfile: services/alert-engine/Dockerfile
+    env_file: .env
+    environment:
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+    depends_on: [kafka]
+    networks: [phantomgrid-net]
+
+  mitre-mapper:
+    build:
+      context: ./services-python/mitre-mapper
+      dockerfile: Dockerfile
+    ports: ["8084:8084"]
+    networks: [phantomgrid-net]
