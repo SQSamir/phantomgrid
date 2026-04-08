@@ -1,9 +1,8 @@
 use axum::{
-    body::Body,
     extract::{Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, Uri},
     middleware::{self, Next},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{any, get, post},
     Json, Router,
 };
@@ -91,8 +90,10 @@ async fn gateway_mw(
     State(st): State<AppState>,
     mut req: Request,
     next: Next,
-) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    validate_request(&req).await?;
+) -> Response {
+    if let Err(err) = validate_request(&req).await {
+        return err.into_response();
+    }
 
     let path = req.uri().path().to_string();
     let method = req.method().as_str().to_string();
@@ -105,19 +106,26 @@ async fn gateway_mw(
     // other endpoints: 1000 req/min per tenant
     if path.starts_with("/api/v1/auth/") {
         let ip = client_ip(req.headers()).unwrap_or_else(|| "unknown".to_string());
-        apply_rate_limit(&st, "auth", &ip, 10).await?;
-        return Ok(next.run(req).await);
+        if let Err(err) = apply_rate_limit(&st, "auth", &ip, 10).await {
+            return err.into_response();
+        }
+        return next.run(req).await;
     }
 
     if path == "/health" || path == "/metrics" || path == "/api/v1/sensors/heartbeat" {
-        return Ok(next.run(req).await);
+        return next.run(req).await;
     }
 
-    let auth = verify_token(&st, req.headers()).await?;
-    apply_rate_limit(&st, "api", &auth.tid, 1000).await?;
+    let auth = match verify_token(&st, req.headers()).await {
+        Ok(v) => v,
+        Err(err) => return err.into_response(),
+    };
+    if let Err(err) = apply_rate_limit(&st, "api", &auth.tid, 1000).await {
+        return err.into_response();
+    }
 
     if !rbac_allowed(&auth.role, &method, &path, &auth.tid) {
-        return Err((StatusCode::FORBIDDEN, Json(serde_json::json!({ "error": "forbidden" }))));
+        return (StatusCode::FORBIDDEN, Json(serde_json::json!({ "error": "forbidden" }))).into_response();
     }
 
     if let Ok(v) = HeaderValue::from_str(&auth.tid) {
@@ -127,7 +135,7 @@ async fn gateway_mw(
         req.headers_mut().insert("x-user-role", v);
     }
 
-    Ok(next.run(req).await)
+    next.run(req).await
 }
 
 async fn verify_token(st: &AppState, headers: &HeaderMap) -> Result<AuthContext, (StatusCode, Json<Value>)> {
