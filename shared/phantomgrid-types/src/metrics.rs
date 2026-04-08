@@ -12,25 +12,25 @@ fn registry() -> &'static Registry {
 pub fn init_http_metrics() {
     let reg = registry();
 
-    if HTTP_REQUESTS_TOTAL.get().is_none()
-        && let Ok(counter) = CounterVec::new(
+    if HTTP_REQUESTS_TOTAL.get().is_none() {
+        if let Ok(counter) = CounterVec::new(
             opts!("http_requests_total", "Total HTTP requests"),
             &["method", "route", "status"],
-        )
-    {
-        let _ = reg.register(Box::new(counter.clone()));
-        let _ = HTTP_REQUESTS_TOTAL.set(counter);
+        ) {
+            let _ = reg.register(Box::new(counter.clone()));
+            let _ = HTTP_REQUESTS_TOTAL.set(counter);
+        }
     }
 
-    if HTTP_REQUEST_DURATION_SECONDS.get().is_none()
-        && let Ok(histogram) = HistogramVec::new(
+    if HTTP_REQUEST_DURATION_SECONDS.get().is_none() {
+        if let Ok(histogram) = HistogramVec::new(
             HistogramOpts::new("http_request_duration_seconds", "HTTP request duration seconds")
                 .buckets(vec![0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0]),
             &["method", "route"],
-        )
-    {
-        let _ = reg.register(Box::new(histogram.clone()));
-        let _ = HTTP_REQUEST_DURATION_SECONDS.set(histogram);
+        ) {
+            let _ = reg.register(Box::new(histogram.clone()));
+            let _ = HTTP_REQUEST_DURATION_SECONDS.set(histogram);
+        }
     }
 }
 
