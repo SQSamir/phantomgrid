@@ -7,8 +7,9 @@ use axum::{
     Json, Router,
 };
 use jsonwebtoken::{decode, DecodingKey, Validation};
+use uuid::Uuid;
 use phantomgrid_types::{HealthResponse, JwtClaims};
-use std::{env, fs};
+use std::{collections::HashMap, env, fs, sync::{Arc, Mutex}, time::{Duration, Instant}};
 
 #[derive(Clone)]
 struct AppState {
@@ -22,6 +23,7 @@ struct AppState {
     tenant_base: String,
     integrations_base: String,
     realtime_base: String,
+    rate_limit: Arc<Mutex<HashMap<String, (u32, Instant)>>>,
 }
 
 #[tokio::main]
@@ -41,6 +43,7 @@ async fn main() -> anyhow::Result<()> {
         tenant_base: env::var("TENANT_MANAGER_URL").unwrap_or_else(|_| "http://tenant-manager:8088".into()),
         integrations_base: env::var("INTEGRATIONS_URL").unwrap_or_else(|_| "http://integrations:8089".into()),
         realtime_base: env::var("REALTIME_URL").unwrap_or_else(|_| "http://realtime:8085".into()),
+        rate_limit: Arc::new(Mutex::new(HashMap::new())),
     };
 
     let app = Router::new()
@@ -75,11 +78,36 @@ async fn main() -> anyhow::Result<()> {
 
 async fn auth_mw(
     State(st): State<AppState>,
-    req: Request,
+    mut req: Request,
     next: Next,
 ) -> Result<impl IntoResponse, StatusCode> {
     let path = req.uri().path();
+
+    // basic per-IP fixed-window rate limit (120 req/min)
+    let client_id = req
+        .headers()
+        .get("cf-connecting-ip")
+        .or_else(|| req.headers().get("x-forwarded-for"))
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    {
+        let mut rl = st.rate_limit.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let now = Instant::now();
+        let entry = rl.entry(client_id).or_insert((0, now));
+        if now.duration_since(entry.1) > Duration::from_secs(60) {
+            *entry = (0, now);
+        }
+        entry.0 += 1;
+        if entry.0 > 120 {
+            return Err(StatusCode::TOO_MANY_REQUESTS);
+        }
+    }
+
     if path.starts_with("/api/v1/auth/") || path == "/health" || path == "/api/v1/sensors/heartbeat" {
+        req.headers_mut().insert("x-request-id", axum::http::HeaderValue::from_str(&Uuid::new_v4().to_string()).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
         return Ok(next.run(req).await);
     }
     let header = req
@@ -96,6 +124,7 @@ async fn auth_mw(
         &Validation::new(jsonwebtoken::Algorithm::RS256),
     )
     .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    req.headers_mut().insert("x-request-id", axum::http::HeaderValue::from_str(&Uuid::new_v4().to_string()).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
     Ok(next.run(req).await)
 }
 
