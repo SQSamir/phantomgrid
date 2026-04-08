@@ -1,7 +1,8 @@
 use axum::{
-    extract::{Request, State},
-    http::{HeaderMap, HeaderValue, StatusCode, Uri},
-    middleware::Next,
+    body::Body,
+    extract::State,
+    http::{HeaderMap, HeaderValue, Request, StatusCode, Uri},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{any, get, post},
     Json, Router,
@@ -82,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/tenants/*path", any(proxy_tenants))
         .route("/api/v1/integrations/*path", any(proxy_integrations))
         .route("/ws/*path", any(proxy_realtime))
+        .layer(middleware::from_fn(gateway_mw))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
@@ -94,7 +96,7 @@ async fn health() -> Json<HealthResponse> {
 }
 
 async fn gateway_mw(
-    mut req: Request,
+    mut req: Request<Body>,
     next: Next,
 ) -> Response {
     if let Err(err) = validate_request(&req).await {
@@ -240,7 +242,7 @@ fn rbac_allowed(role: &str, method: &str, path: &str, _tenant_id: &str) -> bool 
     false
 }
 
-async fn validate_request(req: &Request) -> Result<(), (StatusCode, Json<Value>)> {
+async fn validate_request(req: &Request<Body>) -> Result<(), (StatusCode, Json<Value>)> {
     if let Some(q) = req.uri().query() {
         for pair in q.split('&') {
             if let Some((k, v)) = pair.split_once('=') {
@@ -298,43 +300,43 @@ async fn metrics(State(st): State<AppState>) -> impl IntoResponse {
     (StatusCode::OK, body)
 }
 
-async fn proxy_auth(State(st): State<AppState>, req: Request) -> impl IntoResponse {
+async fn proxy_auth(State(st): State<AppState>, req: Request<Body>) -> impl IntoResponse {
     proxy(st.auth_base, req, "/api/v1").await
 }
 
-async fn proxy_decoys(State(st): State<AppState>, req: Request) -> impl IntoResponse {
+async fn proxy_decoys(State(st): State<AppState>, req: Request<Body>) -> impl IntoResponse {
     proxy(st.decoy_base, req, "/api/v1").await
 }
 
-async fn proxy_events(State(st): State<AppState>, req: Request) -> impl IntoResponse {
+async fn proxy_events(State(st): State<AppState>, req: Request<Body>) -> impl IntoResponse {
     proxy(st.event_base, req, "/api/v1").await
 }
 
-async fn proxy_alerts(State(st): State<AppState>, req: Request) -> impl IntoResponse {
+async fn proxy_alerts(State(st): State<AppState>, req: Request<Body>) -> impl IntoResponse {
     proxy(st.alert_base, req, "/api/v1").await
 }
 
-async fn proxy_analytics(State(st): State<AppState>, req: Request) -> impl IntoResponse {
+async fn proxy_analytics(State(st): State<AppState>, req: Request<Body>) -> impl IntoResponse {
     proxy(st.analytics_base, req, "/api/v1").await
 }
 
-async fn proxy_mitre(State(st): State<AppState>, req: Request) -> impl IntoResponse {
+async fn proxy_mitre(State(st): State<AppState>, req: Request<Body>) -> impl IntoResponse {
     proxy(st.mitre_base, req, "/api/v1").await
 }
 
-async fn proxy_tenants(State(st): State<AppState>, req: Request) -> impl IntoResponse {
+async fn proxy_tenants(State(st): State<AppState>, req: Request<Body>) -> impl IntoResponse {
     proxy(st.tenant_base, req, "/api/v1").await
 }
 
-async fn proxy_integrations(State(st): State<AppState>, req: Request) -> impl IntoResponse {
+async fn proxy_integrations(State(st): State<AppState>, req: Request<Body>) -> impl IntoResponse {
     proxy(st.integrations_base, req, "/api/v1").await
 }
 
-async fn proxy_realtime(State(st): State<AppState>, req: Request) -> impl IntoResponse {
+async fn proxy_realtime(State(st): State<AppState>, req: Request<Body>) -> impl IntoResponse {
     proxy(st.realtime_base, req, "").await
 }
 
-async fn proxy(base: String, req: Request, strip_prefix: &str) -> impl IntoResponse {
+async fn proxy(base: String, req: Request<Body>, strip_prefix: &str) -> impl IntoResponse {
     let client = reqwest::Client::new();
     let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes()).unwrap_or(reqwest::Method::GET);
     let headers = req.headers().clone();
