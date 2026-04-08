@@ -95,13 +95,41 @@ async fn register(State(st): State<AppState>, Json(req): Json<RegisterRequest>) 
 }
 
 async fn login(State(st): State<AppState>, Json(req): Json<LoginRequest>) -> impl IntoResponse {
-    let row = match sqlx::query_as::<_, (Uuid, Uuid, String, String)>("SELECT id, tenant_id, password_hash, role FROM users WHERE email=$1 AND deactivated_at IS NULL")
-        .bind(&req.email).fetch_optional(&st.pool).await {
+    let row = match sqlx::query_as::<_, (Uuid, Uuid, String, String, i32, Option<chrono::DateTime<chrono::Utc>>)>(
+        "SELECT id, tenant_id, password_hash, role, failed_login_attempts, locked_until FROM users WHERE email=$1 AND deactivated_at IS NULL"
+    )
+    .bind(&req.email)
+    .fetch_optional(&st.pool)
+    .await {
         Ok(Some(v)) => v,
         _ => return StatusCode::UNAUTHORIZED.into_response(),
     };
 
-    if !verify_password(&req.password, &row.2) { return StatusCode::UNAUTHORIZED.into_response(); }
+    if row.5.map(|t| t > Utc::now()).unwrap_or(false) {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    }
+
+    if !verify_password(&req.password, &row.2) {
+        let attempts = row.4 + 1;
+        if attempts >= 5 {
+            let _ = sqlx::query("UPDATE users SET failed_login_attempts=0, locked_until=NOW() + INTERVAL '15 minutes' WHERE id=$1")
+                .bind(row.0)
+                .execute(&st.pool)
+                .await;
+        } else {
+            let _ = sqlx::query("UPDATE users SET failed_login_attempts=$1, locked_until=NULL WHERE id=$2")
+                .bind(attempts)
+                .bind(row.0)
+                .execute(&st.pool)
+                .await;
+        }
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
+    let _ = sqlx::query("UPDATE users SET failed_login_attempts=0, locked_until=NULL, last_login_at=NOW() WHERE id=$1")
+        .bind(row.0)
+        .execute(&st.pool)
+        .await;
 
     let role = parse_role(&row.3);
     let access_claims = make_claims(row.0, row.1, role.clone(), 15);
