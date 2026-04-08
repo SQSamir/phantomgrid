@@ -2,7 +2,7 @@ use axum::{
     body::Body,
     extract::State,
     http::{HeaderMap, HeaderValue, Request, StatusCode, Uri},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{any, get, post},
     Json, Router,
 };
@@ -344,7 +344,7 @@ async fn proxy_realtime(State(st): State<AppState>, mut req: Request<Body>) -> i
     proxy(st.realtime_base, req, "").await
 }
 
-async fn proxy(base: String, req: Request<Body>, strip_prefix: &str) -> impl IntoResponse {
+async fn proxy(base: String, req: Request<Body>, strip_prefix: &str) -> Response {
     let client = reqwest::Client::new();
     let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes()).unwrap_or(reqwest::Method::GET);
     let headers = req.headers().clone();
