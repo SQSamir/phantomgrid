@@ -188,3 +188,11 @@ services:
       dockerfile: services/integrations/Dockerfile
     ports: ["8089:8089"]
     networks: [phantomgrid-net]
+
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports: ["3000:3000"]
+    networks: [phantomgrid-net]
