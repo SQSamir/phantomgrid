@@ -1,5 +1,6 @@
 use axum::{extract::{ws::{Message, WebSocket, WebSocketUpgrade}, Query, State}, response::IntoResponse, routing::get, Router};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
+use rdkafka::message::Message;
 use std::{collections::HashMap, env, sync::Arc};
 use tokio::sync::broadcast;
 
