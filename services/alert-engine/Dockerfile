@@ -7,5 +7,5 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /app/target/release/alert-engine /usr/local/bin/alert-engine
-EXPOSE 8080
+EXPOSE 8083
 CMD ["/usr/local/bin/alert-engine"]
