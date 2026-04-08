@@ -25,5 +25,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+      - name: Install native build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config cmake make g++ libssl-dev libcurl4-openssl-dev libsasl2-dev zlib1g-dev libzstd-dev
       - name: Check workspace
         run: cargo check --workspace
