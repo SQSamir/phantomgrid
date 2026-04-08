@@ -1,7 +1,7 @@
 use axum::{
     extract::{Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, Uri},
-    middleware::{self, Next},
+    middleware::Next,
     response::{IntoResponse, Response},
     routing::{any, get, post},
     Json, Router,
@@ -82,7 +82,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/tenants/*path", any(proxy_tenants))
         .route("/api/v1/integrations/*path", any(proxy_integrations))
         .route("/ws/*path", any(proxy_realtime))
-        .layer(middleware::from_fn(gateway_mw))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
