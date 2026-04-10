@@ -9,3 +9,7 @@ from .docker_api_handler import DockerApiHandler
 from .smtp_handler import SmtpHandler
 from .snmp_handler import SnmpHandler
 from .vnc_handler import VncHandler
+from .mysql_handler import MysqlHandler
+from .postgresql_handler import PostgresqlHandler
+from .smb_handler import SmbHandler
+from .k8s_api_handler import K8sApiHandler

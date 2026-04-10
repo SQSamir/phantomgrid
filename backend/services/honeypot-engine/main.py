@@ -18,6 +18,10 @@ from protocols import (
     SmtpHandler,
     SnmpHandler,
     VncHandler,
+    MysqlHandler,
+    PostgresqlHandler,
+    SmbHandler,
+    K8sApiHandler,
 )
 
 log = structlog.get_logger()
@@ -42,6 +46,10 @@ async def run():
         (SmtpHandler, {"bind_host": s.bind_host, "port": 10025}),
         (SnmpHandler, {"bind_host": s.bind_host, "port": 10161}),
         (VncHandler, {"bind_host": s.bind_host, "port": 15900}),
+        (MysqlHandler, {"bind_host": s.bind_host, "port": 13306}),
+        (PostgresqlHandler, {"bind_host": s.bind_host, "port": 15432}),
+        (SmbHandler, {"bind_host": s.bind_host, "port": 10445}),
+        (K8sApiHandler, {"bind_host": s.bind_host, "port": 16443}),
     ]
 
     servers = []
