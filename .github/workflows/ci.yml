@@ -38,3 +38,52 @@ jobs:
 
       - name: Validate docker-compose
         run: docker compose config >/dev/null
+
+      - name: Build containers
+        run: docker compose build
+
+      - name: Run stack (smoke)
+        run: |
+          docker compose up -d postgres redis zookeeper kafka api-gateway auth-service honeypot-engine realtime
+          sleep 30
+
+      - name: Smoke tests via docker run stack
+        run: |
+          # API gateway health
+          curl -fsS http://localhost:8080/health
+
+          # HTTP honeypot banner/page
+          curl -fsS http://localhost:18080/ | grep -qi "apache2 ubuntu default page"
+
+          # Redis infra ping
+          docker compose exec -T redis redis-cli ping | grep -q PONG
+
+          # FTP honeypot banner check
+          python - << 'PY'
+          import socket
+          s=socket.create_connection(("127.0.0.1",10021),timeout=5)
+          b=s.recv(256).decode("utf-8","ignore")
+          s.close()
+          assert "ProFTPD" in b, b
+          PY
+
+          # DNS honeypot NXDOMAIN check (rcode=3)
+          python - << 'PY'
+          import os, socket, random, struct
+          tid = random.randint(0, 65535)
+          header = struct.pack("!HHHHHH", tid, 0x0100, 1, 0, 0, 0)
+          qname = b"\x04test\x03com\x00"
+          question = qname + struct.pack("!HH", 1, 1)
+          pkt = header + question
+          s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+          s.settimeout(5)
+          s.sendto(pkt, ("127.0.0.1", 15353))
+          data, _ = s.recvfrom(512)
+          flags = struct.unpack("!H", data[2:4])[0]
+          rcode = flags & 0x000F
+          assert rcode == 3, f"expected NXDOMAIN(3), got {rcode}"
+          PY
+
+      - name: Tear down stack
+        if: always()
+        run: docker compose down -v --remove-orphans
