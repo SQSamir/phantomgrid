@@ -76,3 +76,8 @@ async def run():
     finally:
         await c.stop()
         await p.stop()
+
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(run())
