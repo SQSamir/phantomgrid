@@ -72,7 +72,7 @@ jobs:
           docker compose exec -T redis redis-cli ping | grep -q PONG
 
           # FTP honeypot banner check
-          python - << 'PY'
+          retry python - << 'PY'
           import socket
           s=socket.create_connection(("127.0.0.1",10021),timeout=5)
           b=s.recv(256).decode("utf-8","ignore")
@@ -81,7 +81,7 @@ jobs:
           PY
 
           # SSH honeypot banner check
-          python - << 'PY'
+          retry python - << 'PY'
           import socket
           s=socket.create_connection(("127.0.0.1",10022),timeout=5)
           b=s.recv(256).decode("utf-8","ignore")
