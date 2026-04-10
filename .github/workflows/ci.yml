@@ -69,7 +69,7 @@ jobs:
           retry bash -lc 'curl -fsS http://localhost:16443/version | grep -q "v1.28.4"'
 
           # Redis infra ping
-          docker compose exec -T redis redis-cli ping | grep -q PONG
+          retry bash -lc 'docker compose exec -T redis redis-cli ping | grep -q PONG'
 
           # FTP honeypot banner check
           retry bash -lc 'exec 3<>/dev/tcp/127.0.0.1/10021; timeout 3 head -c 256 <&3 | grep -q "ProFTPD"'
