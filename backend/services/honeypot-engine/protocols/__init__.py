@@ -2,3 +2,10 @@ from .http_handler import HttpHandler
 from .redis_handler import RedisHandler
 from .ftp_handler import FtpHandler
 from .dns_handler import DnsHandler
+from .ssh_handler import SshHandler
+from .telnet_handler import TelnetHandler
+from .aws_metadata_handler import AwsMetadataHandler
+from .docker_api_handler import DockerApiHandler
+from .smtp_handler import SmtpHandler
+from .snmp_handler import SnmpHandler
+from .vnc_handler import VncHandler
