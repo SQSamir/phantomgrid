@@ -1,14 +1,24 @@
 #![deny(warnings)]
+
 use anyhow::Context;
-use sqlx::{migrate::Migrator, PgPool};
+use sqlx::{migrate::Migrator, postgres::{PgPool, PgPoolOptions}};
+use std::time::Duration;
 
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
-pub async fn connect(database_url: &str) -> anyhow::Result<PgPool> {
-    let pool = PgPool::connect(database_url)
+pub async fn create_pool(database_url: &str) -> Result<PgPool, sqlx::Error> {
+    PgPoolOptions::new()
+        .max_connections(20)
+        .min_connections(2)
+        .acquire_timeout(Duration::from_secs(10))
+        .connect(database_url)
         .await
-        .with_context(|| "failed to connect postgres")?;
-    Ok(pool)
+}
+
+pub async fn connect(database_url: &str) -> anyhow::Result<PgPool> {
+    create_pool(database_url)
+        .await
+        .with_context(|| "failed to connect postgres")
 }
 
 pub async fn migrate(pool: &PgPool) -> anyhow::Result<()> {

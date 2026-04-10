@@ -58,3 +58,6 @@ rand = "0.8"
 totp-rs = "5"
 lettre = { version = "0.11", features = ["tokio1-native-tls", "builder"] }
 moka = { version = "0.12", features = ["future"] }
+dashmap = "5"
+regex = "1"
+once_cell = "1"

@@ -16,6 +16,7 @@ tracing-subscriber.workspace = true
 dotenvy.workspace = true
 rdkafka.workspace = true
 sqlx.workspace = true
+redis.workspace = true
 phantomgrid-db = { path = "../../shared/phantomgrid-db" }
 phantomgrid-kafka = { path = "../../shared/phantomgrid-kafka" }
 phantomgrid-types = { path = "../../shared/phantomgrid-types" }

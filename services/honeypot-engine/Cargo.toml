@@ -15,6 +15,10 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 dotenvy.workspace = true
 rdkafka.workspace = true
-dashmap = "6"
+dashmap.workspace = true
+once_cell.workspace = true
+regex.workspace = true
+russh.workspace = true
+russh-keys.workspace = true
 phantomgrid-kafka = { path = "../../shared/phantomgrid-kafka" }
 phantomgrid-types = { path = "../../shared/phantomgrid-types" }

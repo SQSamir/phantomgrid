@@ -1,11 +1,9 @@
 use anyhow::Context;
-use axum::{routing::get, Router};
+use maxminddb::{geoip2, Reader};
 use phantomgrid_db::{connect, migrate};
 use phantomgrid_kafka::{consumer, parse_json, producer, publish_json};
-use phantomgrid_types::{EnrichedEvent, RawEvent};
-use redis::AsyncCommands;
-use sqlx::PgPool;
-use std::{env, net::IpAddr, str::FromStr};
+use phantomgrid_types::event::{EnrichedEvent, Enrichment, RawEvent};
+use std::{env, net::{IpAddr, Ipv4Addr}};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -16,18 +14,22 @@ async fn main() -> anyhow::Result<()> {
     let db = connect(&env::var("DATABASE_URL").context("DATABASE_URL missing")?).await?;
     migrate(&db).await?;
 
-    let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://redis:6379".into());
-    let rcli = redis::Client::open(redis_url)?;
+    let geoip_reader = match env::var("GEOIP_DB_PATH") {
+        Ok(path) => match Reader::open_readfile(path) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot open GEOIP DB, enrichment disabled");
+                None
+            }
+        },
+        Err(_) => {
+            tracing::warn!("GEOIP_DB_PATH not set, enrichment disabled");
+            None
+        }
+    };
 
     let c = consumer("phantomgrid-event-processor", &brokers, &["events.raw"])?;
     let p = producer(&brokers)?;
-
-    tokio::spawn(async move {
-        let app = Router::new().route("/metrics", get(|| async { "# TYPE service_up gauge\nservice_up{service=\"event-processor\"} 1\n" }));
-        if let Ok(listener) = tokio::net::TcpListener::bind("0.0.0.0:9100").await {
-            let _ = axum::serve(listener, app).await;
-        }
-    });
 
     loop {
         let msg = c.recv().await?;
@@ -35,103 +37,114 @@ async fn main() -> anyhow::Result<()> {
             continue;
         };
 
-        if is_duplicate(&rcli, &raw).await.unwrap_or(false) {
-            continue;
-        }
-
-        let (country, asn, rdns) = enrich_ip(&raw.source_ip).await;
-        let threat_score = score_event(&raw, country.as_deref(), asn.as_deref());
+        let enrichment = enrich_ip(raw.source_ip.as_str(), geoip_reader.as_ref());
 
         let enriched = EnrichedEvent {
+            mitre_technique_ids: raw
+                .tags
+                .iter()
+                .filter(|t| t.starts_with('T'))
+                .cloned()
+                .collect(),
             raw: raw.clone(),
-            country,
-            asn,
-            rdns,
-            threat_score: Some(threat_score),
+            enrichment,
         };
 
-        persist_event(&db, &raw, &enriched).await;
-        let _ = publish_json(&p, "events.enriched", &enriched.raw.event_id.to_string(), &enriched).await;
+        persist_event(&db, &enriched).await;
+        update_decoy_interaction(&db, &raw).await;
+
+        let _ = publish_json(
+            &p,
+            "events.enriched",
+            &enriched.raw.event_id.to_string(),
+            &enriched,
+        )
+        .await;
     }
 }
 
-async fn is_duplicate(redis_client: &redis::Client, raw: &RawEvent) -> anyhow::Result<bool> {
-    let mut con = redis_client.get_multiplexed_tokio_connection().await?;
-    let key = format!(
-        "pg:dedup:{}:{}:{}:{}",
-        raw.tenant_id, raw.source_ip, raw.decoy_id, raw.protocol
-    );
-    let exists: bool = con.exists(&key).await?;
-    if exists {
-        return Ok(true);
+fn enrich_ip(ip: &str, reader: Option<&Reader<Vec<u8>>>) -> Enrichment {
+    let mut out = Enrichment::default();
+    let Ok(parsed_ip) = ip.parse::<IpAddr>() else {
+        return out;
+    };
+
+    if is_private_ip(parsed_ip) {
+        return out;
     }
-    let _: () = con.set_ex(&key, raw.event_id.to_string(), 15).await?;
-    Ok(false)
+
+    let Some(reader) = reader else {
+        return out;
+    };
+
+    let city = reader.lookup::<geoip2::City<'_>>(parsed_ip).ok();
+    if let Some(city_data) = city {
+        out.country = city_data
+            .country
+            .and_then(|c| c.iso_code)
+            .map(|s| s.to_string());
+        out.city = city_data
+            .city
+            .and_then(|c| c.names)
+            .and_then(|names| names.get("en").map(|v| v.to_string()));
+        out.lat = city_data.location.and_then(|l| l.latitude);
+        out.lon = city_data.location.and_then(|l| l.longitude);
+    }
+
+    if let Ok(asn_data) = reader.lookup::<geoip2::Asn<'_>>(parsed_ip) {
+        out.asn = asn_data.autonomous_system_number.map(|n| n.to_string());
+        out.isp = asn_data
+            .autonomous_system_organization
+            .map(|s| s.to_string());
+    }
+
+    out
 }
 
-async fn enrich_ip(ip: &str) -> (Option<String>, Option<String>, Option<String>) {
-    if is_private_ip(ip) {
-        return (Some("Private".into()), Some("N/A".into()), None);
-    }
-
-    let rdns = tokio::net::lookup_host((ip, 0))
-        .await
-        .ok()
-        .and_then(|mut it| it.next())
-        .map(|sa| sa.ip().to_string());
-
-    // lightweight placeholder enrichment hook; can be replaced with MaxMind/API providers
-    let country = Some("Unknown".into());
-    let asn = Some("AS-UNKNOWN".into());
-
-    (country, asn, rdns)
-}
-
-fn is_private_ip(ip: &str) -> bool {
-    match IpAddr::from_str(ip) {
-        Ok(IpAddr::V4(v4)) => v4.is_private() || v4.is_loopback() || v4.is_link_local(),
-        Ok(IpAddr::V6(v6)) => v6.is_loopback() || v6.is_unspecified() || v6.is_unique_local(),
-        Err(_) => true,
+fn is_private_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_private() ||
+            v4.is_loopback() ||
+            v4.is_link_local() ||
+            v4 == Ipv4Addr::new(0, 0, 0, 0)
+        }
+        IpAddr::V6(v6) => v6.is_loopback() || v6.is_unique_local() || v6.is_unspecified(),
     }
 }
 
-fn score_event(raw: &RawEvent, country: Option<&str>, asn: Option<&str>) -> i32 {
-    let mut score = if raw.severity.eq_ignore_ascii_case("high") { 75 } else { 40 };
-    let proto = raw.protocol.to_ascii_uppercase();
-    if proto == "SSH" || proto == "TELNET" {
-        score += 10;
-    }
-    if raw.tags.iter().any(|t| t.contains("credential") || t.contains("brute")) {
-        score += 10;
-    }
-    if country == Some("Private") {
-        score -= 15;
-    }
-    if asn == Some("AS-UNKNOWN") {
-        score += 5;
-    }
-    score.clamp(0, 100)
-}
-
-async fn persist_event(db: &PgPool, raw: &RawEvent, enriched: &EnrichedEvent) {
+async fn persist_event(db: &sqlx::PgPool, event: &EnrichedEvent) {
     let _ = sqlx::query(
-        "INSERT INTO events (id,tenant_id,decoy_id,session_id,source_ip,source_port,destination_ip,destination_port,protocol,event_type,severity,raw_data,enrichment,tags,created_at) VALUES ($1,$2,$3,$4,$5::inet,$6,$7::inet,$8,$9,$10,$11,$12,$13,$14,$15)",
+        "INSERT INTO events (id, tenant_id, decoy_id, session_id, source_ip, source_port, protocol, event_type, severity, raw_data, enrichment, mitre_technique_ids, tags, destination_ip, destination_port, created_at)
+         VALUES ($1, $2, $3, $4, $5::inet, $6, $7, $8, $9, $10, $11, $12, $13, $14::inet, $15, $16)"
     )
-    .bind(raw.event_id)
-    .bind(raw.tenant_id)
-    .bind(raw.decoy_id)
-    .bind(raw.session_id)
-    .bind(raw.source_ip.parse::<IpAddr>().ok().map(|_| raw.source_ip.clone()))
-    .bind(raw.source_port as i32)
-    .bind(raw.destination_ip.parse::<IpAddr>().ok().map(|_| raw.destination_ip.clone()))
-    .bind(raw.destination_port as i32)
-    .bind(&raw.protocol)
-    .bind(&raw.decoy_type)
-    .bind(&raw.severity)
-    .bind(&raw.raw_data)
-    .bind(serde_json::to_value(enriched).unwrap_or_else(|_| serde_json::json!({})))
-    .bind(&raw.tags)
-    .bind(raw.timestamp)
+    .bind(event.raw.event_id)
+    .bind(event.raw.tenant_id)
+    .bind(event.raw.decoy_id)
+    .bind(event.raw.session_id)
+    .bind(Some(event.raw.source_ip.clone()))
+    .bind(event.raw.source_port.map(i32::from))
+    .bind(format!("{:?}", event.raw.protocol).to_uppercase())
+    .bind(event.raw.event_type.clone())
+    .bind(format!("{:?}", event.raw.severity).to_lowercase())
+    .bind(event.raw.raw_data.clone())
+    .bind(serde_json::to_value(&event.enrichment).unwrap_or_else(|_| serde_json::json!({})))
+    .bind(event.mitre_technique_ids.clone())
+    .bind(event.raw.tags.clone())
+    .bind(event.raw.destination_ip.clone())
+    .bind(event.raw.destination_port.map(i32::from))
+    .bind(event.raw.timestamp)
     .execute(db)
     .await;
+}
+
+async fn update_decoy_interaction(db: &sqlx::PgPool, raw: &RawEvent) {
+    if let Some(decoy_id) = raw.decoy_id {
+        let _ = sqlx::query(
+            "UPDATE decoys SET interaction_count = interaction_count + 1, last_interaction_at = NOW() WHERE id = $1"
+        )
+        .bind(decoy_id)
+        .execute(db)
+        .await;
+    }
 }
