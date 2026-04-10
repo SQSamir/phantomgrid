@@ -1,2 +1,6 @@
-secrets/jwt_private.pem
-secrets/jwt_public.pem
+__pycache__/
+*.pyc
+.venv/
+.env
+node_modules/
+dist/
