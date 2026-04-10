@@ -31,16 +31,15 @@ services:
       - CMD
       - bash
       - -lc
-      - exec 3<>/dev/tcp/127.0.0.1/2181; echo ruok >&3; timeout 2 cat <&3 | grep -q imok
+      - cub zk-ready localhost:2181 30
       interval: 10s
       timeout: 5s
       retries: 8
-      start_period: 30s
+      start_period: 20s
   kafka:
     image: confluentinc/cp-kafka:7.6.0
     depends_on:
-      zookeeper:
-        condition: service_healthy
+    - zookeeper
     environment:
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
@@ -68,12 +67,9 @@ services:
     ports:
     - 8080:8080
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      kafka:
-        condition: service_healthy
+    - postgres
+    - redis
+    - kafka
     working_dir: /app/backend/services/api-gateway
     environment:
       PYTHONPATH: /app
@@ -82,8 +78,7 @@ services:
       context: .
       dockerfile: backend/services/auth-service/Dockerfile
     depends_on:
-      postgres:
-        condition: service_healthy
+    - postgres
     working_dir: /app/backend/services/auth-service
     environment:
       PYTHONPATH: /app
