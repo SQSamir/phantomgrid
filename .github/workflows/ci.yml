@@ -55,6 +55,17 @@ jobs:
           # HTTP honeypot banner/page
           curl -fsS http://localhost:18080/ | grep -qi "apache2 ubuntu default page"
 
+          # AWS metadata honeypot
+          curl -fsS http://localhost:18169/latest/meta-data/ | grep -q "instance-id"
+          curl -fsS http://localhost:18169/latest/meta-data/iam/security-credentials/ | grep -q "EC2InstanceRole-WebServer"
+
+          # Docker API honeypot
+          curl -fsS http://localhost:12375/v1.44/_ping | grep -q "OK"
+          curl -fsS http://localhost:12375/v1.44/containers/json | grep -q "web-server"
+
+          # K8s API honeypot
+          curl -fsS http://localhost:16443/version | grep -q "v1.28.4"
+
           # Redis infra ping
           docker compose exec -T redis redis-cli ping | grep -q PONG
 
@@ -67,9 +78,18 @@ jobs:
           assert "ProFTPD" in b, b
           PY
 
+          # SSH honeypot banner check
+          python - << 'PY'
+          import socket
+          s=socket.create_connection(("127.0.0.1",10022),timeout=5)
+          b=s.recv(256).decode("utf-8","ignore")
+          s.close()
+          assert "SSH-2.0-OpenSSH" in b, b
+          PY
+
           # DNS honeypot NXDOMAIN check (rcode=3)
           python - << 'PY'
-          import os, socket, random, struct
+          import socket, random, struct
           tid = random.randint(0, 65535)
           header = struct.pack("!HHHHHH", tid, 0x0100, 1, 0, 0, 0)
           qname = b"\x04test\x03com\x00"
