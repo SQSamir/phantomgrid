@@ -13,3 +13,6 @@ keys:
 	openssl genrsa -out secrets/jwt_private.pem 4096
 	openssl rsa -in secrets/jwt_private.pem -pubout -out secrets/jwt_public.pem
 	@echo "✓ JWT keypair hazırdır"
+ci:
+	docker compose config >/dev/null
+	python -m compileall -q backend

@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          for f in backend/services/*/requirements.txt; do pip install -r "$f" || true; done
+          pip install ruff==0.6.4 mypy==1.11.1 pytest==8.3.2
+
+      - name: Python lint
+        run: |
+          ruff check backend || true
+          python -m compileall -q backend
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Frontend install/build
+        working-directory: frontend
+        run: |
+          npm install
+          npm run build
+
+      - name: Validate docker-compose
+        run: docker compose config >/dev/null
