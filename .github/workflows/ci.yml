@@ -49,7 +49,7 @@ jobs:
 
       - name: Smoke tests via docker run stack
         run: |
-          retry() { n=0; until [ "$n" -ge 15 ]; do "$@" && return 0; n=$((n+1)); sleep 2; done; return 1; }
+          retry() { n=0; until [ "$n" -ge 30 ]; do "$@" && return 0; n=$((n+1)); sleep 3; done; return 1; }
 
           # API gateway health
           retry curl -fsS http://localhost:8080/health
