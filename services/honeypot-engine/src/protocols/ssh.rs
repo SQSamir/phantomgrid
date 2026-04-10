@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::{DecoyConfig, EngineContext};
 
-#[derive(serde::Deserialize)]
+#[derive(Clone, serde::Deserialize)]
 pub struct SshConfig {
     pub banner: String,
     pub fake_hostname: String,

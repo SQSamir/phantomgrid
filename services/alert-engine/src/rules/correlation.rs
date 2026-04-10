@@ -24,18 +24,18 @@ pub async fn matches(
     let _ = redis::cmd("SADD")
         .arg(&key)
         .arg(decoy_id.to_string())
-        .query_async::<()>(&mut con)
+        .query_async::<_, ()>(&mut con)
         .await;
 
     let _ = redis::cmd("EXPIRE")
         .arg(&key)
         .arg(window_seconds.max(60))
-        .query_async::<()>(&mut con)
+        .query_async::<_, ()>(&mut con)
         .await;
 
     let cardinality = redis::cmd("SCARD")
         .arg(&key)
-        .query_async::<i64>(&mut con)
+        .query_async::<_, i64>(&mut con)
         .await
         .unwrap_or(0);
 

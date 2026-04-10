@@ -85,7 +85,7 @@ async fn run_loop(db: PgPool, redis_client: redis::Client, brokers: &str) -> any
 
             let suppress_exists = redis::cmd("EXISTS")
                 .arg(&suppression_key)
-                .query_async::<i64>(&mut con)
+                .query_async::<_, i64>(&mut con)
                 .await
                 .unwrap_or(0)
                 > 0;
@@ -119,7 +119,7 @@ async fn run_loop(db: PgPool, redis_client: redis::Client, brokers: &str) -> any
                 .arg(&suppression_key)
                 .arg(ttl)
                 .arg("1")
-                .query_async::<()>(&mut con)
+                .query_async::<_, ()>(&mut con)
                 .await;
 
             let alert_payload = json!({

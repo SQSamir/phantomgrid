@@ -36,25 +36,25 @@ pub async fn matches(
         .arg(&key)
         .arg(now)
         .arg(event.raw.event_id.to_string())
-        .query_async::<()>(&mut con)
+        .query_async::<_, ()>(&mut con)
         .await;
 
     let _ = redis::cmd("ZREMRANGEBYSCORE")
         .arg(&key)
         .arg(0)
         .arg(min_score)
-        .query_async::<()>(&mut con)
+        .query_async::<_, ()>(&mut con)
         .await;
 
     let _ = redis::cmd("EXPIRE")
         .arg(&key)
         .arg(window_seconds.max(30))
-        .query_async::<()>(&mut con)
+        .query_async::<_, ()>(&mut con)
         .await;
 
     let count = redis::cmd("ZCARD")
         .arg(&key)
-        .query_async::<i64>(&mut con)
+        .query_async::<_, i64>(&mut con)
         .await
         .unwrap_or(0);
 
