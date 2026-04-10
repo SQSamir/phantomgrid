@@ -49,22 +49,24 @@ jobs:
 
       - name: Smoke tests via docker run stack
         run: |
+          retry() { n=0; until [ "$n" -ge 15 ]; do "$@" && return 0; n=$((n+1)); sleep 2; done; return 1; }
+
           # API gateway health
-          curl -fsS http://localhost:8080/health
+          retry curl -fsS http://localhost:8080/health
 
           # HTTP honeypot banner/page
-          curl -fsS http://localhost:18080/ | grep -qi "apache2 ubuntu default page"
+          retry bash -lc 'curl -fsS http://localhost:18080/ | grep -qi "apache2 ubuntu default page"'
 
           # AWS metadata honeypot
-          curl -fsS http://localhost:18169/latest/meta-data/ | grep -q "instance-id"
-          curl -fsS http://localhost:18169/latest/meta-data/iam/security-credentials/ | grep -q "EC2InstanceRole-WebServer"
+          retry bash -lc 'curl -fsS http://localhost:18169/latest/meta-data/ | grep -q "instance-id"'
+          retry bash -lc 'curl -fsS http://localhost:18169/latest/meta-data/iam/security-credentials/ | grep -q "EC2InstanceRole-WebServer"'
 
           # Docker API honeypot
-          curl -fsS http://localhost:12375/v1.44/_ping | grep -q "OK"
-          curl -fsS http://localhost:12375/v1.44/containers/json | grep -q "web-server"
+          retry bash -lc 'curl -fsS http://localhost:12375/v1.44/_ping | grep -q "OK"'
+          retry bash -lc 'curl -fsS http://localhost:12375/v1.44/containers/json | grep -q "web-server"'
 
           # K8s API honeypot
-          curl -fsS http://localhost:16443/version | grep -q "v1.28.4"
+          retry bash -lc 'curl -fsS http://localhost:16443/version | grep -q "v1.28.4"'
 
           # Redis infra ping
           docker compose exec -T redis redis-cli ping | grep -q PONG
