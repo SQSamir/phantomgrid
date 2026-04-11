@@ -1,16 +1,22 @@
+import asyncio
 import os
+import secrets
 import uuid
 import hmac
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 
 import pyotp
+from cryptography.fernet import Fernet, InvalidToken
 from fastapi import FastAPI, Depends, HTTPException, Header
 from jose import jwt, JWTError
 from passlib.context import CryptContext
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.shared.db import get_db
+from backend.shared.models.tenant import Tenant
 from backend.shared.models.user import User
 from backend.shared.redis_client import get_redis
 from backend.shared.schemas.auth import RegisterRequest, LoginRequest, TokenResponse
@@ -18,29 +24,96 @@ from backend.shared.schemas.auth import RegisterRequest, LoginRequest, TokenResp
 app = FastAPI(title="auth-service")
 pwd = CryptContext(schemes=["argon2"], deprecated="auto")
 
+from prometheus_fastapi_instrumentator import Instrumentator
+Instrumentator().instrument(app).expose(app)
+
+# ---------------------------------------------------------------------------
+# JWT signing material — validated once at startup, cached in memory
+# ---------------------------------------------------------------------------
 PRIVATE_KEY_PATH = os.getenv("JWT_PRIVATE_KEY_PATH", "/run/secrets/jwt_private.pem")
 PUBLIC_KEY_PATH = os.getenv("JWT_PUBLIC_KEY_PATH", "/run/secrets/jwt_public.pem")
 REQUIRE_RS256 = os.getenv("REQUIRE_RS256", "false").lower() == "true"
-FALLBACK_SECRET = os.getenv("JWT_SECRET", "dev-secret")
+_JWT_SECRET_ENV = os.getenv("JWT_SECRET", "")
+
+_has_rs256_keys = os.path.exists(PRIVATE_KEY_PATH) and os.path.exists(PUBLIC_KEY_PATH)
+if not _has_rs256_keys:
+    if not _JWT_SECRET_ENV:
+        raise RuntimeError(
+            "No JWT signing material found. "
+            "Mount RS256 key files or set JWT_SECRET (minimum 32 characters)."
+        )
+    if len(_JWT_SECRET_ENV) < 32:
+        raise RuntimeError(f"JWT_SECRET is too short ({len(_JWT_SECRET_ENV)} chars). Minimum 32.")
+
+FALLBACK_SECRET = _JWT_SECRET_ENV
 
 
-class TotpRequest(dict):
-    pass
-
-
+@lru_cache(maxsize=1)
 def _jwt_material():
-    has_rs = os.path.exists(PRIVATE_KEY_PATH) and os.path.exists(PUBLIC_KEY_PATH)
-    if has_rs:
+    """Load JWT keys once; cached for the process lifetime."""
+    if os.path.exists(PRIVATE_KEY_PATH) and os.path.exists(PUBLIC_KEY_PATH):
         with open(PRIVATE_KEY_PATH, "r", encoding="utf-8") as f:
             priv = f.read()
         with open(PUBLIC_KEY_PATH, "r", encoding="utf-8") as f:
             pub = f.read()
         return "RS256", priv, pub
-
     if REQUIRE_RS256:
         raise RuntimeError("RS256 required but key files not present")
-
     return "HS256", FALLBACK_SECRET, FALLBACK_SECRET
+
+
+# ---------------------------------------------------------------------------
+# MFA secret encryption
+# ---------------------------------------------------------------------------
+_MFA_ENC_KEY = os.getenv("MFA_ENCRYPTION_KEY", "")
+if not _MFA_ENC_KEY:
+    raise RuntimeError(
+        "MFA_ENCRYPTION_KEY not set. "
+        "Generate: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+    )
+try:
+    _fernet = Fernet(_MFA_ENC_KEY.encode() if isinstance(_MFA_ENC_KEY, str) else _MFA_ENC_KEY)
+except Exception as exc:
+    raise RuntimeError(f"MFA_ENCRYPTION_KEY is not a valid Fernet key: {exc}") from exc
+
+_BACKUP_CODE_COUNT = 8
+_BACKUP_CODE_LEN = 10
+
+
+def _encrypt_mfa_secret(plaintext: str) -> str:
+    return _fernet.encrypt(plaintext.encode()).decode()
+
+
+def _decrypt_mfa_secret(ciphertext: str) -> str:
+    try:
+        return _fernet.decrypt(ciphertext.encode()).decode()
+    except InvalidToken as exc:
+        raise ValueError("failed to decrypt MFA secret") from exc
+
+
+def _generate_backup_codes() -> tuple[list[str], list[str]]:
+    plain = [secrets.token_hex(_BACKUP_CODE_LEN // 2) for _ in range(_BACKUP_CODE_COUNT)]
+    hashed = [pwd.hash(code) for code in plain]
+    return plain, hashed
+
+
+def _verify_backup_code(code: str, hashed_codes: list[str]) -> int | None:
+    for i, h in enumerate(hashed_codes):
+        try:
+            if pwd.verify(code, h):
+                return i
+        except Exception:
+            continue
+    return None
+
+
+def _verify_totp(secret: str, code: str) -> bool:
+    if not secret or not code:
+        return False
+    try:
+        return pyotp.TOTP(secret).verify(code, valid_window=1)
+    except Exception:
+        return False
 
 
 def _now():
@@ -71,15 +144,6 @@ def _refresh_claims(user: User):
     }
 
 
-def _verify_totp(secret: str, code: str) -> bool:
-    if not secret or not code:
-        return False
-    try:
-        return pyotp.TOTP(secret).verify(code, valid_window=1)
-    except Exception:
-        return False
-
-
 async def _token_from_authz(authorization: str):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "missing bearer token")
@@ -94,9 +158,24 @@ async def _decode_access(token: str):
         raise HTTPException(401, "invalid token")
 
 
+async def _hash_password(password: str) -> str:
+    """Run argon2 hashing in a thread pool so it doesn't block the event loop."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, pwd.hash, password)
+
+
+async def _verify_password(password: str, hashed: str) -> bool:
+    """Run argon2 verification in a thread pool."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, pwd.verify, password, hashed)
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
 @app.get("/health")
 async def health():
-    # fail fast if RS256 required but not mounted
     if REQUIRE_RS256 and (not os.path.exists(PRIVATE_KEY_PATH) or not os.path.exists(PUBLIC_KEY_PATH)):
         raise HTTPException(500, "RS256 key files missing")
     return {"status": "ok"}
@@ -108,16 +187,22 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
     if exists:
         raise HTTPException(409, "email exists")
 
+    # Create a new tenant for this registration
+    tenant = Tenant(name=req.display_name or req.email.split("@")[0])
+    db.add(tenant)
+    await db.flush()
+
+    hashed = await _hash_password(req.password)
     u = User(
-        tenant_id=uuid.uuid4(),
+        tenant_id=tenant.id,
         email=req.email,
-        password_hash=pwd.hash(req.password),
+        password_hash=hashed,
         role="tenant_admin",
         display_name=req.display_name,
     )
     db.add(u)
     await db.commit()
-    return {"id": str(u.id), "email": u.email}
+    return {"id": str(u.id), "tenant_id": str(tenant.id), "email": u.email}
 
 
 @app.post("/auth/login", response_model=TokenResponse)
@@ -130,7 +215,7 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     if u.locked_until and u.locked_until > _now():
         raise HTTPException(423, "account locked")
 
-    ok = hmac.compare_digest(str(pwd.verify(req.password, u.password_hash)), "True")
+    ok = await _verify_password(req.password, u.password_hash)
     if not ok:
         u.failed_login_attempts = (u.failed_login_attempts or 0) + 1
         if u.failed_login_attempts >= 5:
@@ -138,19 +223,32 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
         await db.commit()
         raise HTTPException(401, fail)
 
-    # MFA gate
+    # Tenant-level MFA enforcement
+    tenant = await db.scalar(select(Tenant).where(Tenant.id == u.tenant_id))
+    if tenant and tenant.mfa_required and not u.mfa_enabled:
+        raise HTTPException(403, "mfa enrollment required — contact your administrator")
+
     if u.mfa_enabled:
         if not req.otp:
             raise HTTPException(401, "mfa required")
-        # replay prevention per user+TOTP time-step
-        timestep = int(_now().timestamp() // 30)
-        replay_key = f"mfa:replay:{u.id}:{timestep}:{req.otp}"
         r = get_redis()
-        if await r.get(replay_key):
-            raise HTTPException(401, "otp replay detected")
-        if not _verify_totp(u.mfa_secret or "", req.otp):
-            raise HTTPException(401, "invalid otp")
-        await r.setex(replay_key, 120, "1")
+        otp_value = req.otp.strip()
+        backup_codes = u.mfa_backup_codes or []
+        if backup_codes and len(otp_value) == _BACKUP_CODE_LEN:
+            match_idx = _verify_backup_code(otp_value, backup_codes)
+            if match_idx is None:
+                raise HTTPException(401, "invalid backup code")
+            backup_codes.pop(match_idx)
+            u.mfa_backup_codes = backup_codes
+        else:
+            timestep = int(_now().timestamp() // 30)
+            replay_key = f"mfa:replay:{u.id}:{timestep}:{otp_value}"
+            if await r.get(replay_key):
+                raise HTTPException(401, "otp replay detected")
+            totp_secret = _decrypt_mfa_secret(u.mfa_secret) if u.mfa_secret else ""
+            if not _verify_totp(totp_secret, otp_value):
+                raise HTTPException(401, "invalid otp")
+            await r.setex(replay_key, 120, "1")
 
     u.failed_login_attempts = 0
     u.locked_until = None
@@ -168,15 +266,15 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     return TokenResponse(access_token=access, refresh_token=refresh)
 
 
-@app.post("/auth/refresh", response_model=TokenResponse)
-async def refresh_token(payload: dict):
-    refresh = payload.get("refresh_token")
-    if not refresh:
-        raise HTTPException(400, "missing refresh_token")
+class RefreshRequest(BaseModel):
+    refresh_token: str
 
+
+@app.post("/auth/refresh", response_model=TokenResponse)
+async def refresh_token(req: RefreshRequest, db: AsyncSession = Depends(get_db)):
     algo, _, verify_key = _jwt_material()
     try:
-        claims = jwt.decode(refresh, verify_key, algorithms=[algo])
+        claims = jwt.decode(req.refresh_token, verify_key, algorithms=[algo])
     except JWTError:
         raise HTTPException(401, "invalid refresh token")
 
@@ -188,34 +286,20 @@ async def refresh_token(payload: dict):
     exists = await r.get(f"refresh:{jti}")
     if not exists:
         raise HTTPException(401, "refresh token already used or revoked")
-
     await r.delete(f"refresh:{jti}")
 
     uid = claims.get("sub")
-    tid = claims.get("tid")
-    role = "tenant_admin"
-    now = _now()
-    new_access_claims = {
-        "sub": uid,
-        "tid": tid,
-        "role": role,
-        "iat": int(now.timestamp()),
-        "exp": int((now + timedelta(minutes=15)).timestamp()),
-        "jti": str(uuid.uuid4()),
-    }
-    new_refresh_claims = {
-        "sub": uid,
-        "tid": tid,
-        "iat": int(now.timestamp()),
-        "exp": int((now + timedelta(days=7)).timestamp()),
-        "jti": str(uuid.uuid4()),
-        "typ": "refresh",
-    }
+    # Re-read user from DB to pick up current role (not stale from token)
+    u = await db.scalar(select(User).where(User.id == uid))
+    if not u or u.deactivated_at:
+        raise HTTPException(401, "user not found or deactivated")
 
     algo, sign_key, _ = _jwt_material()
+    new_access_claims = _access_claims(u)
+    new_refresh_claims = _refresh_claims(u)
     access = jwt.encode(new_access_claims, sign_key, algorithm=algo)
     new_refresh = jwt.encode(new_refresh_claims, sign_key, algorithm=algo)
-    await r.setex(f"refresh:{new_refresh_claims['jti']}", 7 * 24 * 3600, uid)
+    await r.setex(f"refresh:{new_refresh_claims['jti']}", 7 * 24 * 3600, str(u.id))
     return TokenResponse(access_token=access, refresh_token=new_refresh)
 
 
@@ -229,7 +313,7 @@ async def logout(payload: dict):
             jti = claims.get("jti")
             if jti:
                 await get_redis().delete(f"refresh:{jti}")
-        except Exception:
+        except JWTError:
             pass
     return {"ok": True}
 
@@ -281,16 +365,17 @@ async def mfa_confirm(payload: dict, authorization: str = Header(default=""), db
     if not _verify_totp(secret, code):
         raise HTTPException(401, "invalid otp")
 
-    u.mfa_secret = secret
+    plain_codes, hashed_codes = _generate_backup_codes()
+    u.mfa_secret = _encrypt_mfa_secret(secret)
     u.mfa_enabled = True
+    u.mfa_backup_codes = hashed_codes
     await db.commit()
     await r.delete(f"mfa:pending:{u.id}")
-    return {"ok": True, "mfa_enabled": True}
+    return {"ok": True, "mfa_enabled": True, "backup_codes": plain_codes}
 
 
 @app.post("/auth/mfa/verify")
 async def mfa_verify(payload: dict, db: AsyncSession = Depends(get_db)):
-    # step-up endpoint for clients that separate password and otp phases
     email = payload.get("email")
     code = payload.get("otp")
     if not email or not code:
@@ -300,14 +385,26 @@ async def mfa_verify(payload: dict, db: AsyncSession = Depends(get_db)):
     if not u or not u.mfa_enabled:
         raise HTTPException(404, "mfa not enabled")
 
+    # Enforce account lockout on this endpoint too
+    if u.locked_until and u.locked_until > _now():
+        raise HTTPException(423, "account locked")
+
     timestep = int(_now().timestamp() // 30)
     replay_key = f"mfa:replay:{u.id}:{timestep}:{code}"
     r = get_redis()
     if await r.get(replay_key):
         raise HTTPException(401, "otp replay detected")
 
-    if not _verify_totp(u.mfa_secret or "", code):
+    totp_secret = _decrypt_mfa_secret(u.mfa_secret) if u.mfa_secret else ""
+    if not _verify_totp(totp_secret, code):
+        u.failed_login_attempts = (u.failed_login_attempts or 0) + 1
+        if u.failed_login_attempts >= 5:
+            u.locked_until = _now() + timedelta(minutes=15)
+        await db.commit()
         raise HTTPException(401, "invalid otp")
 
+    u.failed_login_attempts = 0
+    u.locked_until = None
+    await db.commit()
     await r.setex(replay_key, 120, "1")
     return {"ok": True}

@@ -7,11 +7,11 @@ class SmbHandler(BaseHoneypotHandler):
     PROTOCOL = "SMB"
 
     async def start(self):
-        return await asyncio.start_server(self._handle, self.config.get("bind_host", "0.0.0.0"), self.config.get("port", 10445))
+        return await self._start_server(self._handle, self.config.get("bind_host", "0.0.0.0"), self.config.get("port", 10445))
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         ip = writer.get_extra_info("peername")[0]
-        if not self.tracker.allow(ip):
+        if not await self.tracker.allow(ip):
             writer.close(); return
         try:
             data = await asyncio.wait_for(reader.read(4096), timeout=30)
@@ -35,10 +35,14 @@ class SmbHandler(BaseHoneypotHandler):
                         "hash_for_analysis": ntlm_info.get("formatted_hash"),
                     }, ["ntlm_hash_captured", "lateral_movement"])
                 await self.emit(ip, None, "share_enumeration", "high", {"fake_shares": ["ADMIN$", "C$", "Finance", "HR"]})
-        except Exception:
-            pass
+        except (asyncio.TimeoutError, ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
+            pass  # Expected: client disconnected or timed out
+        except struct.error as exc:
+            self.log.warning("smb_malformed_packet", error=str(exc), ip=ip)
+        except Exception as exc:
+            self.log.error("smb_handler_error", error=str(exc), ip=ip)
         finally:
-            self.tracker.release(ip); writer.close()
+            await self.tracker.release(ip); writer.close()
 
     def _build_smb2_negotiate(self) -> bytes:
         return b"\x00\x00\x01\x00" + b"\xfe\x53\x4d\x42" + b"\x00" * 60
@@ -85,5 +89,5 @@ class SmbHandler(BaseHoneypotHandler):
                 "net_ntlmv2_hash": nt_response,
                 "formatted_hash": f"{username}::{domain}:0102030405060708:{nt_response[:32]}:{nt_response[32:]}",
             }
-        except Exception:
+        except struct.error:
             return {}

@@ -6,7 +6,7 @@ class SshHandler(BaseHoneypotHandler):
     PROTOCOL = "SSH"
 
     async def start(self):
-        return await asyncio.start_server(
+        return await self._start_server(
             self._handle,
             self.config.get("bind_host", "0.0.0.0"),
             self.config.get("port", 10022),
@@ -14,7 +14,7 @@ class SshHandler(BaseHoneypotHandler):
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         ip = writer.get_extra_info("peername")[0]
-        if not self.tracker.allow(ip):
+        if not await self.tracker.allow(ip):
             writer.close()
             return
 
@@ -67,8 +67,11 @@ class SshHandler(BaseHoneypotHandler):
                     writer.write(f"bash: {cmd.split()[0]}: command not found\n".encode())
                 writer.write(b"root@web-prod-01:~# ")
                 await writer.drain()
-        except Exception:
-            pass
+        except (asyncio.TimeoutError, ConnectionResetError, BrokenPipeError,
+                asyncio.IncompleteReadError, asyncio.LimitOverrunError):
+            pass  # Expected: client disconnected, timed out, or sent oversized input
+        except Exception as exc:
+            self.log.error("ssh_handler_error", error=str(exc), ip=ip)
         finally:
-            self.tracker.release(ip)
+            await self.tracker.release(ip)
             writer.close()

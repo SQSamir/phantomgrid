@@ -1,4 +1,5 @@
 import asyncio
+import struct
 from .base import BaseHoneypotHandler
 
 
@@ -38,7 +39,7 @@ class SnmpProtocol(asyncio.DatagramProtocol):
             if data[pos] == 0x04:
                 com_len = data[pos + 1]
                 return data[pos + 2:pos + 2 + com_len].decode("utf-8", errors="replace")
-        except Exception:
+        except (IndexError, struct.error):
             pass
         return "unknown"
 

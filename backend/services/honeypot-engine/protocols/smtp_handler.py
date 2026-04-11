@@ -6,11 +6,11 @@ class SmtpHandler(BaseHoneypotHandler):
     PROTOCOL = "SMTP"
 
     async def start(self):
-        return await asyncio.start_server(self._handle, self.config.get("bind_host", "0.0.0.0"), self.config.get("port", 10025))
+        return await self._start_server(self._handle, self.config.get("bind_host", "0.0.0.0"), self.config.get("port", 10025))
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         ip = writer.get_extra_info("peername")[0]
-        if not self.tracker.allow(ip):
+        if not await self.tracker.allow(ip):
             writer.close(); return
         sender = None
         recipients = []
@@ -44,11 +44,18 @@ class SmtpHandler(BaseHoneypotHandler):
                     writer.write(b"354 End data with <CR><LF>.<CR><LF>\r\n")
                     await writer.drain()
                     body = []
+                    line_count = 0
+                    _MAX_BODY_LINES = 500
                     while True:
                         dl = await asyncio.wait_for(reader.readline(), timeout=60)
                         if dl.strip() == b".":
                             break
-                        body.append(dl.decode(errors="ignore"))
+                        line_count += 1
+                        if line_count <= _MAX_BODY_LINES:
+                            body.append(dl.decode(errors="ignore"))
+                        elif line_count > _MAX_BODY_LINES + 1:
+                            # Drain silently — still wait for terminating "."
+                            pass
                     preview = "".join(body[:50])[:500]
                     await self.emit(ip, None, "email_received", "medium", {"sender": sender, "recipients": recipients, "body_preview": preview})
                     external = [r for r in recipients if not r.endswith((".corp.local", ".internal"))]
@@ -62,7 +69,10 @@ class SmtpHandler(BaseHoneypotHandler):
                 else:
                     writer.write(b"502 5.5.2 Error: command not recognized\r\n")
                 await writer.drain()
-        except Exception:
-            pass
+        except (asyncio.TimeoutError, ConnectionResetError, BrokenPipeError,
+                asyncio.IncompleteReadError, asyncio.LimitOverrunError):
+            pass  # Expected: client disconnected, timed out, or sent oversized input
+        except Exception as exc:
+            self.log.error("smtp_handler_error", error=str(exc), ip=ip)
         finally:
-            self.tracker.release(ip); writer.close()
+            await self.tracker.release(ip); writer.close()

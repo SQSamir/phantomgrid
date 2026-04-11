@@ -19,9 +19,13 @@ class DnsProtocol(asyncio.DatagramProtocol):
     async def _h(self, data: bytes, addr):
         ip, port = addr
         await self.h.emit(ip, port, "recon_query", "medium", {"raw": data.hex()[:80]})
-        if len(data) < 12: return
+        if len(data) < 12:
+            return
         tid = data[:2]
-        flags = 0x8183
+        # QR=1 (response) | OPCODE=0 | AA=0 | TC=0 | RD=0 | RA=0 | RCODE=3 (NXDOMAIN)
+        # RA bit (0x0080) intentionally cleared — do not advertise recursive capability,
+        # which would allow this listener to be abused for DNS amplification attacks.
+        flags = 0x8003
         header = struct.pack("!HHHHHH", int.from_bytes(tid, "big"), flags, 1, 0, 0, 0)
         q = data[12:]
         self.t.sendto(header + q, addr)

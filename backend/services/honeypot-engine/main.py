@@ -66,6 +66,28 @@ async def run():
     log.info("honeypot_engine_started", decoys=len(servers))
     await stop.wait()
 
+    log.info("honeypot_engine_stopping")
+
+    # Close all listeners so no new connections are accepted.
+    for srv in servers:
+        try:
+            if hasattr(srv, "close"):          # asyncio.Server or web.AppRunner
+                srv.close()
+                if hasattr(srv, "wait_closed"):
+                    await srv.wait_closed()
+            elif hasattr(srv, "abort"):        # asyncio.DatagramTransport (DNS, SNMP)
+                srv.abort()
+        except Exception as exc:
+            log.warning("server_close_error", error=str(exc))
+
+    # Flush pending events and stop the Kafka producer cleanly.
+    try:
+        await emitter.stop()
+    except Exception as exc:
+        log.warning("emitter_stop_error", error=str(exc))
+
+    log.info("honeypot_engine_stopped")
+
 
 if __name__ == "__main__":
     asyncio.run(run())

@@ -5,11 +5,11 @@ class FtpHandler(BaseHoneypotHandler):
     PROTOCOL = "FTP"
 
     async def start(self):
-        return await asyncio.start_server(self._handle, self.config.get("bind_host", "0.0.0.0"), self.config.get("port", 10021))
+        return await self._start_server(self._handle, self.config.get("bind_host", "0.0.0.0"), self.config.get("port", 10021))
 
     async def _handle(self, r, w):
         ip = w.get_extra_info("peername")[0]
-        if not self.tracker.allow(ip):
+        if not await self.tracker.allow(ip):
             w.close(); return
         try:
             w.write(b"220 ProFTPD 1.3.8 Server (Phantom FTP)\r\n")
@@ -29,7 +29,10 @@ class FtpHandler(BaseHoneypotHandler):
                 else:
                     w.write(b"200 OK\r\n")
                 await w.drain()
-        except Exception:
-            pass
+        except (asyncio.TimeoutError, ConnectionResetError, BrokenPipeError,
+                asyncio.IncompleteReadError, asyncio.LimitOverrunError):
+            pass  # Expected: client disconnected, timed out, or sent oversized input
+        except Exception as exc:
+            self.log.error("ftp_handler_error", error=str(exc), ip=ip)
         finally:
-            self.tracker.release(ip); w.close()
+            await self.tracker.release(ip); w.close()

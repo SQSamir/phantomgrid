@@ -1,0 +1,26 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-gray-950 text-gray-100;
+  }
+  ::-webkit-scrollbar { @apply w-1.5; }
+  ::-webkit-scrollbar-track { @apply bg-gray-900; }
+  ::-webkit-scrollbar-thumb { @apply bg-gray-600 rounded; }
+}
+
+@layer components {
+  .card { @apply bg-gray-900 border border-gray-800 rounded-lg p-4; }
+  .btn-primary { @apply bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed; }
+  .btn-secondary { @apply bg-gray-800 hover:bg-gray-700 text-gray-200 px-4 py-2 rounded-lg text-sm font-medium transition-colors; }
+  .btn-danger { @apply bg-red-700 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors; }
+  .input { @apply bg-gray-800 border border-gray-700 text-gray-100 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-500 w-full; }
+  .badge-critical { @apply bg-red-900 text-red-300 text-xs px-2 py-0.5 rounded-full font-medium; }
+  .badge-high { @apply bg-orange-900 text-orange-300 text-xs px-2 py-0.5 rounded-full font-medium; }
+  .badge-medium { @apply bg-yellow-900 text-yellow-300 text-xs px-2 py-0.5 rounded-full font-medium; }
+  .badge-low { @apply bg-green-900 text-green-300 text-xs px-2 py-0.5 rounded-full font-medium; }
+  .badge-info { @apply bg-blue-900 text-blue-300 text-xs px-2 py-0.5 rounded-full font-medium; }
+  .table-row { @apply border-b border-gray-800 hover:bg-gray-800/50 transition-colors; }
+}

@@ -7,11 +7,11 @@ class PostgresqlHandler(BaseHoneypotHandler):
     PROTOCOL = "POSTGRESQL"
 
     async def start(self):
-        return await asyncio.start_server(self._handle, self.config.get("bind_host", "0.0.0.0"), self.config.get("port", 15432))
+        return await self._start_server(self._handle, self.config.get("bind_host", "0.0.0.0"), self.config.get("port", 15432))
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         ip = writer.get_extra_info("peername")[0]
-        if not self.tracker.allow(ip):
+        if not await self.tracker.allow(ip):
             writer.close(); return
         try:
             length_bytes = await reader.read(4)
@@ -70,10 +70,14 @@ class PostgresqlHandler(BaseHoneypotHandler):
                     await writer.drain()
                 elif mt == b"X":
                     break
-        except Exception:
-            pass
+        except (asyncio.TimeoutError, ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
+            pass  # Expected: client disconnected or timed out
+        except struct.error as exc:
+            self.log.warning("postgresql_malformed_packet", error=str(exc), ip=ip)
+        except Exception as exc:
+            self.log.error("postgresql_handler_error", error=str(exc), ip=ip)
         finally:
-            self.tracker.release(ip); writer.close()
+            await self.tracker.release(ip); writer.close()
 
     def _param(self, name, value):
         payload = f"{name}\x00{value}\x00".encode()

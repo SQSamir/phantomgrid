@@ -7,11 +7,11 @@ class MysqlHandler(BaseHoneypotHandler):
     PROTOCOL = "MYSQL"
 
     async def start(self):
-        return await asyncio.start_server(self._handle, self.config.get("bind_host", "0.0.0.0"), self.config.get("port", 13306))
+        return await self._start_server(self._handle, self.config.get("bind_host", "0.0.0.0"), self.config.get("port", 13306))
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         ip = writer.get_extra_info("peername")[0]
-        if not self.tracker.allow(ip):
+        if not await self.tracker.allow(ip):
             writer.close(); return
         try:
             # protocol v10 greeting
@@ -55,15 +55,19 @@ class MysqlHandler(BaseHoneypotHandler):
                     await writer.drain()
                 elif data[4] == 0x01:  # COM_QUIT
                     break
-        except Exception:
-            pass
+        except (asyncio.TimeoutError, ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
+            pass  # Expected: client disconnected or timed out
+        except struct.error as exc:
+            self.log.warning("mysql_malformed_packet", error=str(exc), ip=ip)
+        except Exception as exc:
+            self.log.error("mysql_handler_error", error=str(exc), ip=ip)
         finally:
-            self.tracker.release(ip); writer.close()
+            await self.tracker.release(ip); writer.close()
 
     def _extract_username(self, data: bytes) -> str:
         try:
             pos = 36
             end = data.index(b"\x00", pos)
             return data[pos:end].decode("utf-8", errors="replace")
-        except Exception:
+        except (ValueError, IndexError):
             return "unknown"
