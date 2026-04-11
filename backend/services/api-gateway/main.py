@@ -6,6 +6,7 @@ from functools import lru_cache
 import httpx
 import structlog
 from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from jose import jwt, JWTError
 from slowapi import Limiter
@@ -90,6 +91,15 @@ limiter = Limiter(key_func=get_remote_address, default_limits=[_RATE_LIMIT])
 # ---------------------------------------------------------------------------
 app = FastAPI(title="api-gateway")
 app.state.limiter = limiter
+
+_CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 from prometheus_fastapi_instrumentator import Instrumentator
 Instrumentator().instrument(app).expose(app)
