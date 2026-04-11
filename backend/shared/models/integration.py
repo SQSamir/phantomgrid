@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 from sqlalchemy import String, DateTime, Boolean, func, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -13,5 +14,5 @@ class Integration(Base):
     type: Mapped[str] = mapped_column(String(64), nullable=False)  # webhook | slack | pagerduty | email
     config: Mapped[dict] = mapped_column(JSONB, default=dict)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    last_triggered_at: Mapped = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

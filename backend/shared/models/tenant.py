@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 from sqlalchemy import String, Integer, Boolean, DateTime, func
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -14,5 +15,5 @@ class Tenant(Base):
     # mfa_required=True forces all users in this tenant to enroll MFA before login
     mfa_required: Mapped[bool] = mapped_column(Boolean, default=False)
     config: Mapped[dict] = mapped_column(JSONB, default=dict)
-    created_at: Mapped = mapped_column(DateTime(timezone=True), server_default=func.now())
-    suspended_at: Mapped = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    suspended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

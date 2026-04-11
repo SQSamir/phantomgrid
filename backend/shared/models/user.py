@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 from sqlalchemy import String, DateTime, Text, func, ForeignKey, Integer, Boolean
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -18,7 +19,7 @@ class User(Base):
     mfa_backup_codes: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     failed_login_attempts: Mapped[int] = mapped_column(Integer, default=0)
-    locked_until: Mapped = mapped_column(DateTime(timezone=True), nullable=True)
-    last_login_at: Mapped = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped = mapped_column(DateTime(timezone=True), server_default=func.now())
-    deactivated_at: Mapped = mapped_column(DateTime(timezone=True), nullable=True)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 from sqlalchemy import String, DateTime, func, ForeignKey, Integer
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY, INET
 from sqlalchemy.orm import Mapped, mapped_column
@@ -21,4 +22,4 @@ class Event(Base):
     enrichment: Mapped[dict] = mapped_column(JSONB, default=dict)
     mitre_technique_ids: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
     tags: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
-    created_at: Mapped = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 from sqlalchemy import String, DateTime, func, ForeignKey, Integer
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
@@ -13,7 +14,7 @@ class DecoyNetwork(Base):
     vlan_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     environment_type: Mapped[str] = mapped_column(String(64), default="corporate")
     description: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at: Mapped = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 class Decoy(Base):
     __tablename__ = "decoys"
@@ -28,10 +29,10 @@ class Decoy(Base):
     port: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tags: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
     interaction_count: Mapped[int] = mapped_column(Integer, default=0)
-    last_interaction_at: Mapped = mapped_column(DateTime(timezone=True), nullable=True)
-    deployed_at: Mapped = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_interaction_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deployed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 class DecoyTemplate(Base):
     __tablename__ = "decoy_templates"

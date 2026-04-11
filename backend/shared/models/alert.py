@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 from sqlalchemy import String, DateTime, func, ForeignKey, Integer, Boolean
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
@@ -15,9 +16,9 @@ class AlertRule(Base):
     severity: Mapped[str] = mapped_column(String(16), default="medium")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     trigger_count: Mapped[int] = mapped_column(Integer, default=0)
-    last_triggered_at: Mapped = mapped_column(DateTime(timezone=True), nullable=True)
+    last_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     suppression_minutes: Mapped[int] = mapped_column(Integer, default=5)
-    created_at: Mapped = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 class Alert(Base):
     __tablename__ = "alerts"
@@ -33,5 +34,5 @@ class Alert(Base):
     source_asn: Mapped[str | None] = mapped_column(String(128), nullable=True)
     mitre_technique_ids: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
     event_count: Mapped[int] = mapped_column(Integer, default=1)
-    first_seen_at: Mapped = mapped_column(DateTime(timezone=True), server_default=func.now())
-    last_seen_at: Mapped = mapped_column(DateTime(timezone=True), server_default=func.now())
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
