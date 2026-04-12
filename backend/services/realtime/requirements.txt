@@ -4,3 +4,4 @@ aiokafka==0.11.0
 pydantic==2.7.1
 python-jose[cryptography]==3.3.0
 prometheus-fastapi-instrumentator==6.1.0
+structlog==24.1.0

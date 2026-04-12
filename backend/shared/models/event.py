@@ -1,13 +1,13 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import String, DateTime, func, ForeignKey, Integer
+from sqlalchemy import String, DateTime, func, ForeignKey, Integer, PrimaryKeyConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY, INET
 from sqlalchemy.orm import Mapped, mapped_column
 from ..db import Base
 
 class Event(Base):
     __tablename__ = "events"
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
     decoy_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
     session_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
@@ -23,3 +23,5 @@ class Event(Base):
     mitre_technique_ids: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
     tags: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (PrimaryKeyConstraint("id", "created_at"),)

@@ -16,3 +16,5 @@ keys:
 ci:
 	docker compose config >/dev/null
 	python -m compileall -q backend
+migrate:
+	docker compose run --rm migrate

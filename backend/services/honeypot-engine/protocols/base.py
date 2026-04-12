@@ -28,10 +28,12 @@ class BaseHoneypotHandler:
         """Wrapper so all TCP handlers get a consistent read-buffer limit."""
         return await asyncio.start_server(handler, host, port, limit=SERVER_LIMIT)
 
-    async def emit(self, source_ip, source_port, event_type, severity, raw_data, tags=None):
+    async def emit(self, source_ip, source_port, event_type, severity, raw_data,
+                   tags=None, session_id=None):
         event = RawEvent(
             tenant_id=self.tenant_id,
             decoy_id=self.decoy_id,
+            session_id=session_id,
             source_ip=source_ip,
             source_port=source_port,
             protocol=Protocol(self.PROTOCOL),

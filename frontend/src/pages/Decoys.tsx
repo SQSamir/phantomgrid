@@ -16,10 +16,36 @@ const STATUS_COLOR: Record<string, string> = {
   paused: 'text-orange-400', error: 'text-red-400', destroyed: 'text-gray-600',
 };
 
-const DECOY_TYPES = [
-  'ssh_honeypot','http_honeypot','https_honeypot','redis_honeypot','mysql_honeypot',
-  'ftp_honeypot','telnet_honeypot','dns_honeypot','smb_honeypot','k8s_api_honeypot',
-  'docker_api_honeypot','aws_metadata_honeypot',
+const DECOY_TYPES: { value: string; label: string; group: string }[] = [
+  // IT / Network
+  { value: 'ssh_honeypot',       label: 'SSH',              group: 'IT / Network' },
+  { value: 'http_honeypot',      label: 'HTTP',             group: 'IT / Network' },
+  { value: 'https_honeypot',     label: 'HTTPS',            group: 'IT / Network' },
+  { value: 'ftp_honeypot',       label: 'FTP',              group: 'IT / Network' },
+  { value: 'telnet_honeypot',    label: 'Telnet',           group: 'IT / Network' },
+  { value: 'smtp_honeypot',      label: 'SMTP',             group: 'IT / Network' },
+  { value: 'dns_honeypot',       label: 'DNS',              group: 'IT / Network' },
+  { value: 'snmp_honeypot',      label: 'SNMP',             group: 'IT / Network' },
+  { value: 'vnc_honeypot',       label: 'VNC',              group: 'IT / Network' },
+  // Windows / AD
+  { value: 'rdp_honeypot',       label: 'RDP',              group: 'Windows / AD' },
+  { value: 'smb_honeypot',       label: 'SMB',              group: 'Windows / AD' },
+  { value: 'mssql_honeypot',     label: 'MS-SQL',           group: 'Windows / AD' },
+  // Database / Cache
+  { value: 'mysql_honeypot',     label: 'MySQL',            group: 'Database' },
+  { value: 'postgresql_honeypot',label: 'PostgreSQL',       group: 'Database' },
+  { value: 'redis_honeypot',     label: 'Redis',            group: 'Database' },
+  // Cloud / Container
+  { value: 'k8s_api_honeypot',   label: 'Kubernetes API',  group: 'Cloud / Container' },
+  { value: 'docker_api_honeypot',label: 'Docker API',       group: 'Cloud / Container' },
+  { value: 'aws_metadata_honeypot', label: 'AWS Metadata', group: 'Cloud / Container' },
+  // OT / ICS / SCADA
+  { value: 'modbus_honeypot',    label: 'Modbus (PLC)',     group: 'OT / ICS' },
+  { value: 'dnp3_honeypot',      label: 'DNP3 (SCADA)',     group: 'OT / ICS' },
+  { value: 's7_honeypot',        label: 'Siemens S7 (PLC)', group: 'OT / ICS' },
+  // IoT
+  { value: 'mqtt_honeypot',      label: 'MQTT Broker',      group: 'IoT' },
+  { value: 'coap_honeypot',      label: 'CoAP (UDP)',        group: 'IoT' },
 ];
 
 export default function Decoys() {
@@ -27,6 +53,10 @@ export default function Decoys() {
   const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState('');
   const [type, setType] = useState('ssh_honeypot');
+  const _typeGroups = DECOY_TYPES.reduce<Record<string, typeof DECOY_TYPES>>((acc, t) => {
+    (acc[t.group] ??= []).push(t); return acc;
+  }, {});
+  const [ipAddress, setIpAddress] = useState('');
   const [port, setPort] = useState('');
   const [error, setError] = useState('');
 
@@ -55,11 +85,13 @@ export default function Decoys() {
 
   const create = useMutation({
     mutationFn: () => apiPost('/api/decoys', {
-      name, type, port: port ? parseInt(port) : undefined,
+      name, type,
+      ip_address: ipAddress || undefined,
+      port: port ? parseInt(port) : undefined,
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['decoys'] });
-      setShowCreate(false); setName(''); setPort(''); setError('');
+      setShowCreate(false); setName(''); setIpAddress(''); setPort(''); setError('');
     },
     onError: (e: any) => setError(e.message),
   });
@@ -77,7 +109,7 @@ export default function Decoys() {
         <div className="card border-indigo-800">
           <h3 className="font-semibold mb-4">Create Decoy</h3>
           {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-4 gap-3">
             <div>
               <label className="block text-xs text-gray-400 mb-1">Name</label>
               <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
@@ -85,8 +117,16 @@ export default function Decoys() {
             <div>
               <label className="block text-xs text-gray-400 mb-1">Type</label>
               <select className="input" value={type} onChange={(e) => setType(e.target.value)}>
-                {DECOY_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                {Object.entries(_typeGroups).map(([group, items]) => (
+                  <optgroup key={group} label={group}>
+                    {items.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                  </optgroup>
+                ))}
               </select>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">IP Address (optional)</label>
+              <input className="input font-mono" placeholder="e.g. 192.168.1.10" value={ipAddress} onChange={(e) => setIpAddress(e.target.value)} />
             </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">Port (optional)</label>
@@ -120,14 +160,19 @@ export default function Decoys() {
             {decoys.filter((d) => d.status !== 'destroyed').map((d) => (
               <tr key={d.id} className="table-row">
                 <td className="px-4 py-2.5 font-medium text-white">{d.name}</td>
-                <td className="px-4 py-2.5 text-gray-400">{d.type}</td>
+                <td className="px-4 py-2.5 text-gray-400">
+                  {DECOY_TYPES.find((t) => t.value === d.type)?.label ?? d.type}
+                </td>
                 <td className="px-4 py-2.5">
                   <span className={`text-xs font-medium capitalize ${STATUS_COLOR[d.status] ?? 'text-gray-400'}`}>
                     {d.status}
                   </span>
                 </td>
                 <td className="px-4 py-2.5 font-mono text-gray-400 text-xs">
-                  {d.ip_address ? `${d.ip_address}:${d.port ?? '?'}` : '—'}
+                  {d.ip_address && d.port ? `${d.ip_address}:${d.port}`
+                    : d.ip_address ? d.ip_address
+                    : d.port ? `*:${d.port}`
+                    : '—'}
                 </td>
                 <td className="px-4 py-2.5 text-gray-300">{d.interaction_count}</td>
                 <td className="px-4 py-2.5 text-right">

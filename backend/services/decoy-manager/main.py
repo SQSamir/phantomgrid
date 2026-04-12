@@ -12,20 +12,26 @@ Lifecycle transitions:
 Kafka topic ``decoy.lifecycle`` is published for every status change so the
 honeypot-engine can start/stop listeners accordingly.
 """
+import json
+import random
+import secrets
+import string
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
 from aiokafka import AIOKafkaProducer
-from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi import FastAPI, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select, func
+from sqlalchemy import select, func, cast
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.shared.db import get_db, tenant_db
 from backend.shared.enums import DecoyStatus
 from backend.shared.kafka import create_producer, send_json
+from backend.shared.models.artifact import Artifact
 from backend.shared.models.decoy import Decoy, DecoyNetwork, DecoyTemplate
 from backend.shared.tenant_context import TenantContext, require_tenant
 
@@ -560,3 +566,332 @@ async def get_template(
     if not t:
         raise HTTPException(404, "template not found")
     return _tmpl_out(t)
+
+
+# ---------------------------------------------------------------------------
+# Deception Artifacts  (Lure / Bait / Breadcrumb / Honeytoken)
+# ---------------------------------------------------------------------------
+
+ARTIFACT_SUBTYPES = {
+    "lure":        ["login_page", "exposed_api"],
+    "bait":        ["aws_key", "api_token", "jwt_token", "ssh_key", "db_credentials"],
+    "breadcrumb":  ["bash_history", "env_file", "config_file", "network_map"],
+    "honeytoken":  ["url_token", "dns_token"],
+}
+
+
+def _rand(chars: str, n: int) -> str:
+    return "".join(random.choices(chars, k=n))
+
+
+def _generate_content(artifact_type: str, subtype: str, base_url: str = "http://localhost:8080") -> dict:
+    alpha  = string.ascii_letters + string.digits
+    hex_   = string.hexdigits.lower()
+
+    if subtype == "aws_key":
+        return {
+            "access_key_id":     "AKIA" + _rand(string.ascii_uppercase + string.digits, 16),
+            "secret_access_key": secrets.token_urlsafe(30),
+            "region":            "us-east-1",
+            "profile":           "default",
+            "note":              "Plant in ~/.aws/credentials or hardcode in source code",
+        }
+    if subtype == "api_token":
+        return {
+            "token":   "ghp_" + secrets.token_hex(18),
+            "service": "GitHub",
+            "scopes":  ["repo", "admin:org", "read:user"],
+            "note":    "Plant in .env files, config files, or CI/CD pipelines",
+        }
+    if subtype == "jwt_token":
+        import base64
+        header  = base64.urlsafe_b64encode(b'{"alg":"HS256","typ":"JWT"}').rstrip(b"=").decode()
+        payload = base64.urlsafe_b64encode(
+            json.dumps({"sub": "svc-account", "role": "admin", "iat": 1700000000}).encode()
+        ).rstrip(b"=").decode()
+        sig     = secrets.token_hex(16)
+        return {
+            "token": f"{header}.{payload}.{sig}",
+            "service": "Internal API",
+            "note": "Plant in source code comments, config files, or Slack exports",
+        }
+    if subtype == "ssh_key":
+        fake_body = "\n".join(
+            _rand(alpha + "+/", 64) for _ in range(25)
+        )
+        return {
+            "private_key": (
+                "-----BEGIN RSA PRIVATE KEY-----\n"
+                + fake_body + "\n"
+                "-----END RSA PRIVATE KEY-----"
+            ),
+            "key_comment": "deploy@prod-bastion",
+            "note": "Plant as ~/.ssh/id_rsa or in a Git repo",
+        }
+    if subtype == "db_credentials":
+        pwd = secrets.token_urlsafe(16)
+        return {
+            "host":     "prod-db-01.internal",
+            "port":     5432,
+            "database": "customers_prod",
+            "username": "app_readonly",
+            "password": pwd,
+            "dsn":      f"postgresql://app_readonly:{pwd}@prod-db-01.internal:5432/customers_prod",
+            "note":     "Plant in application config, README, or wiki pages",
+        }
+    if subtype == "bash_history":
+        return {
+            "filename": ".bash_history",
+            "content": (
+                "ssh admin@10.10.0.50\n"
+                "mysql -h prod-db-01.internal -u root -pS3cr3tP@ss\n"
+                "curl -H 'Authorization: Bearer ghp_" + secrets.token_hex(18) + "' https://api.internal/v1/users\n"
+                "scp deploy@bastion:/home/deploy/.ssh/id_rsa .\n"
+                "kubectl --kubeconfig=./admin.conf get secrets -A\n"
+                "aws s3 cp s3://company-backups/db_dump.sql.gz .\n"
+            ),
+            "note": "Plant as /home/<user>/.bash_history on a decoy workstation",
+        }
+    if subtype == "env_file":
+        return {
+            "filename": ".env",
+            "content": (
+                f"DATABASE_URL=postgresql://app:{secrets.token_urlsafe(12)}@prod-db-01.internal:5432/app_prod\n"
+                f"REDIS_URL=redis://:{secrets.token_urlsafe(12)}@cache-01.internal:6379\n"
+                f"AWS_ACCESS_KEY_ID=AKIA{_rand(string.ascii_uppercase + string.digits, 16)}\n"
+                f"AWS_SECRET_ACCESS_KEY={secrets.token_urlsafe(30)}\n"
+                f"JWT_SECRET={secrets.token_hex(32)}\n"
+                f"STRIPE_SECRET_KEY=sk_live_{secrets.token_hex(24)}\n"
+            ),
+            "note": "Plant in application root directory or Git history",
+        }
+    if subtype == "config_file":
+        return {
+            "filename": "database.yml",
+            "content": (
+                "production:\n"
+                "  adapter: postgresql\n"
+                "  host: prod-db-01.internal\n"
+                "  database: app_production\n"
+                "  username: app_user\n"
+                f"  password: {secrets.token_urlsafe(14)}\n"
+                "  pool: 5\n"
+            ),
+            "note": "Plant in config/ directory of a decoy application server",
+        }
+    if subtype == "network_map":
+        return {
+            "filename": "network_topology.txt",
+            "content": (
+                "=== INTERNAL NETWORK MAP ===\n"
+                "Domain Controller:  10.10.0.10  (dc01.corp.internal)\n"
+                "Backup DC:          10.10.0.11  (dc02.corp.internal)\n"
+                "File Server:        10.10.1.20  (fs01.corp.internal)\n"
+                "Finance DB:         10.10.2.50  (fin-db.corp.internal)\n"
+                "HR System:          10.10.2.51  (hr-db.corp.internal)\n"
+                "Bastion Host:       10.10.0.5   (bastion.corp.internal)\n"
+                "VPN Gateway:        203.0.113.1\n"
+            ),
+            "note": "Plant as a file on a decoy workstation or shared drive",
+        }
+    if subtype == "login_page":
+        token_id = str(uuid.uuid4())
+        return {
+            "template":      "cisco_vpn",
+            "fake_domain":   "vpn.corp-internal.net",
+            "capture_url":   f"{base_url}/api/artifacts/t/{token_id}",
+            "token_id":      token_id,
+            "note":          "Configure in HTTP honeypot or serve via nginx",
+        }
+    if subtype == "url_token":
+        token_id = secrets.token_hex(16)
+        return {
+            "token_id":    token_id,
+            "trigger_url": f"{base_url}/api/artifacts/t/{token_id}",
+            "note":        "Embed in documents, emails, HTML files, or config",
+        }
+    if subtype == "dns_token":
+        label = secrets.token_hex(8)
+        return {
+            "hostname":   f"{label}.canary.yourdomain.com",
+            "token_id":   label,
+            "note":       "Plant in /etc/hosts or DNS configs; trigger fires on DNS lookup",
+        }
+    if subtype == "exposed_api":
+        token_id = secrets.token_hex(16)
+        return {
+            "token_id":    token_id,
+            "trigger_url": f"{base_url}/api/artifacts/t/{token_id}",
+            "fake_path":   "/api/v1/internal/admin",
+            "note":        "Register as a fake endpoint in your API docs or Swagger",
+        }
+    return {}
+
+
+class ArtifactCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    type: str = Field(..., pattern="^(lure|bait|breadcrumb|honeytoken)$")
+    subtype: str = Field(..., max_length=64)
+    description: str | None = Field(None, max_length=512)
+
+
+class ArtifactOut(BaseModel):
+    id: str
+    name: str
+    type: str
+    subtype: str
+    description: str | None
+    content: dict
+    status: str
+    trigger_count: int
+    last_triggered_at: str | None
+    created_at: str
+
+
+def _artifact_out(a: Artifact) -> dict:
+    return ArtifactOut(
+        id=str(a.id),
+        name=a.name,
+        type=a.type,
+        subtype=a.subtype,
+        description=a.description,
+        content=a.content or {},
+        status=a.status,
+        trigger_count=a.trigger_count or 0,
+        last_triggered_at=str(a.last_triggered_at) if a.last_triggered_at else None,
+        created_at=str(a.created_at),
+    ).model_dump()
+
+
+@app.get("/api/artifacts")
+async def list_artifacts(
+    type_filter: str | None = Query(None, alias="type"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    ctx: TenantContext = Depends(require_tenant),
+):
+    async with tenant_db(ctx.tenant_id) as db:
+        q = select(Artifact).where(Artifact.tenant_id == ctx.tenant_id)
+        if type_filter:
+            q = q.where(Artifact.type == type_filter)
+        q = q.order_by(Artifact.created_at.desc()).offset(offset).limit(limit)
+        rows = await db.execute(q)
+        artifacts = rows.scalars().all()
+        total = await db.scalar(
+            select(func.count(Artifact.id)).where(Artifact.tenant_id == ctx.tenant_id)
+        )
+    return {"total": total, "items": [_artifact_out(a) for a in artifacts]}
+
+
+@app.post("/api/artifacts", status_code=201)
+async def create_artifact(
+    body: ArtifactCreate,
+    request: Request,
+    ctx: TenantContext = Depends(require_tenant),
+):
+    valid_subtypes = ARTIFACT_SUBTYPES.get(body.type, [])
+    if body.subtype not in valid_subtypes:
+        raise HTTPException(400, f"invalid subtype '{body.subtype}' for type '{body.type}'. valid: {valid_subtypes}")
+
+    base_url = str(request.base_url).rstrip("/")
+    content = _generate_content(body.type, body.subtype, base_url)
+
+    async with tenant_db(ctx.tenant_id) as db:
+        a = Artifact(
+            tenant_id=uuid.UUID(ctx.tenant_id),
+            name=body.name,
+            type=body.type,
+            subtype=body.subtype,
+            description=body.description,
+            content=content,
+            status="active",
+        )
+        db.add(a)
+        await db.commit()
+        await db.refresh(a)
+    return _artifact_out(a)
+
+
+@app.delete("/api/artifacts/{artifact_id}", status_code=204)
+async def delete_artifact(
+    artifact_id: str,
+    ctx: TenantContext = Depends(require_tenant),
+):
+    async with tenant_db(ctx.tenant_id) as db:
+        a = await db.scalar(
+            select(Artifact).where(Artifact.id == artifact_id, Artifact.tenant_id == ctx.tenant_id)
+        )
+        if not a:
+            raise HTTPException(404, "artifact not found")
+        await db.delete(a)
+        await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Honeytoken trigger — PUBLIC endpoint (no JWT required)
+# Accessed by attacker when they use a planted token/URL
+# ---------------------------------------------------------------------------
+
+@app.get("/api/artifacts/t/{token_id}")
+async def trigger_honeytoken(token_id: str, request: Request):
+    """Called when an attacker uses a planted honeytoken URL.
+    No authentication required — the token IS the authentication.
+    """
+    from sqlalchemy import text as sa_text
+    from backend.shared.db import get_db as _get_db
+
+    attacker_ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "unknown")
+
+    # Look up artifact by token_id in JSONB content
+    async for db in _get_db():
+        row = await db.execute(
+            sa_text(
+                "SELECT id, tenant_id, name, subtype, trigger_count "
+                "FROM artifacts "
+                "WHERE content->>'token_id' = :token_id AND status = 'active' "
+                "LIMIT 1"
+            ),
+            {"token_id": token_id},
+        )
+        artifact = row.mappings().first()
+
+        if artifact:
+            # Increment trigger count
+            await db.execute(
+                sa_text(
+                    "UPDATE artifacts SET trigger_count = trigger_count + 1, "
+                    "last_triggered_at = now() "
+                    "WHERE id = :id"
+                ),
+                {"id": str(artifact["id"])},
+            )
+            await db.commit()
+
+            # Emit event to Kafka → event-processor will save it
+            if _producer:
+                import json as _json
+                from datetime import datetime as _dt
+                await _producer.send_and_wait(
+                    "events.raw",
+                    _json.dumps({
+                        "event_id":   str(uuid.uuid4()),
+                        "timestamp":  _dt.utcnow().isoformat(),
+                        "tenant_id":  str(artifact["tenant_id"]),
+                        "source_ip":  attacker_ip,
+                        "protocol":   "HONEYTOKEN",
+                        "event_type": "honeytoken_triggered",
+                        "severity":   "critical",
+                        "raw_data": {
+                            "token_id":      token_id,
+                            "artifact_name": artifact["name"],
+                            "subtype":       artifact["subtype"],
+                            "trigger_count": artifact["trigger_count"] + 1,
+                            "user_agent":    request.headers.get("User-Agent", ""),
+                            "referer":       request.headers.get("Referer", ""),
+                        },
+                        "tags": ["honeytoken_triggered", "deception_artifact"],
+                    }).encode(),
+                )
+
+    # Return a convincing but benign response regardless of match
+    return {"status": "ok"}

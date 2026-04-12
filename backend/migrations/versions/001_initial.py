@@ -175,7 +175,7 @@ def upgrade() -> None:
     # -------------------------------------------------------------------------
     op.create_table(
         "events",
-        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
+        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()")),
         sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
         sa.Column("decoy_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("session_id", postgresql.UUID(as_uuid=True), nullable=True),
@@ -191,6 +191,7 @@ def upgrade() -> None:
         sa.Column("mitre_technique_ids", postgresql.ARRAY(sa.String()), server_default="{}"),
         sa.Column("tags", postgresql.ARRAY(sa.String()), server_default="{}"),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.PrimaryKeyConstraint("id", "created_at"),
     )
     op.create_index("idx_events_tenant_id", "events", ["tenant_id"])
     op.create_index("idx_events_decoy_id", "events", ["decoy_id"])
@@ -204,16 +205,14 @@ def upgrade() -> None:
 
     # Convert events to TimescaleDB hypertable (1-day chunks)
     op.execute("SELECT create_hypertable('events', 'created_at', chunk_time_interval => INTERVAL '1 day')")
-    # Compress chunks older than 7 days
-    op.execute("ALTER TABLE events SET (timescaledb.compress, timescaledb.compress_segmentby = 'tenant_id,protocol')")
-    op.execute("SELECT add_compression_policy('events', INTERVAL '7 days')")
-    # Retain 90 days by default
-    op.execute("SELECT add_retention_policy('events', INTERVAL '90 days')")
+    # NOTE: compression/retention policies omitted — incompatible with
+    # TimescaleDB columnstore (hypercore) enabled by default in latest-pg16.
 
     # -------------------------------------------------------------------------
     # Row-Level Security
     # -------------------------------------------------------------------------
-    for table in ("events", "alerts", "alert_rules", "decoys", "decoy_networks", "integrations"):
+    # events excluded: RLS not supported on hypertables with columnstore
+    for table in ("alerts", "alert_rules", "decoys", "decoy_networks", "integrations"):
         op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
         op.execute(f"""
             CREATE POLICY tenant_isolation ON {table}
@@ -223,30 +222,30 @@ def upgrade() -> None:
         op.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
 
     # -------------------------------------------------------------------------
-    # Seed decoy templates
+    # Seed decoy templates  (using jsonb_build_object to avoid colon/bind-param issues)
     # -------------------------------------------------------------------------
-    op.execute("""
+    op.execute(sa.text("""
         INSERT INTO decoy_templates (name, type, description, default_config, tags) VALUES
-        ('SSH Linux Server', 'ssh_honeypot', 'Ubuntu 22.04 OpenSSH server', '{"port":22,"banner":"SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6"}', '{"linux","ssh"}'),
-        ('Windows SMB Share', 'smb_honeypot', 'Windows file share with NTLM capture', '{"port":445,"workgroup":"CORP"}', '{"windows","smb"}'),
-        ('MySQL Database', 'mysql_honeypot', 'MySQL 8.0 database server', '{"port":3306,"version":"8.0.35"}', '{"database","mysql"}'),
-        ('AWS EC2 Metadata', 'aws_metadata_honeypot', 'EC2 IMDS v1/v2 endpoint', '{"port":80,"role":"EC2InstanceRole-WebServer"}', '{"aws","cloud"}'),
-        ('Docker API', 'docker_api_honeypot', 'Exposed Docker daemon API', '{"port":2375}', '{"docker","container"}'),
-        ('Kubernetes API', 'k8s_api_honeypot', 'Kubernetes API server', '{"port":6443}', '{"kubernetes","container"}'),
-        ('HTTP Web Server', 'http_honeypot', 'Apache2 Ubuntu default page', '{"port":80}', '{"http","web"}'),
-        ('Redis Cache', 'redis_honeypot', 'Redis in-memory cache', '{"port":6379}', '{"redis","cache"}'),
-        ('PostgreSQL Database', 'postgresql_honeypot', 'PostgreSQL 16 database', '{"port":5432}', '{"database","postgresql"}'),
-        ('FTP Server', 'ftp_honeypot', 'ProFTPD server', '{"port":21}', '{"ftp","file"}'),
-        ('SMTP Mail Server', 'smtp_honeypot', 'Postfix mail server', '{"port":25}', '{"smtp","mail"}'),
-        ('Telnet Device', 'telnet_honeypot', 'BusyBox IoT device', '{"port":23}', '{"iot","telnet"}'),
-        ('VNC Server', 'vnc_honeypot', 'VNC remote desktop', '{"port":5900}', '{"vnc","remote"}'),
-        ('SNMP Agent', 'snmp_honeypot', 'SNMP network device', '{"port":161}', '{"snmp","network"}'),
-        ('DNS Server', 'dns_honeypot', 'DNS resolver', '{"port":53}', '{"dns","network"}')
-    """)
-
+        ('SSH Linux Server',     'ssh_honeypot',         'Ubuntu 22.04 OpenSSH server',          jsonb_build_object('port', 22,   'banner', 'SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6'), '{linux,ssh}'),
+        ('Windows SMB Share',    'smb_honeypot',         'Windows file share with NTLM capture', jsonb_build_object('port', 445,  'workgroup', 'CORP'),                                  '{windows,smb}'),
+        ('MySQL Database',       'mysql_honeypot',       'MySQL 8.0 database server',            jsonb_build_object('port', 3306, 'version', '8.0.35'),                                  '{database,mysql}'),
+        ('AWS EC2 Metadata',     'aws_metadata_honeypot','EC2 IMDS v1/v2 endpoint',              jsonb_build_object('port', 80,   'role', 'EC2InstanceRole-WebServer'),                  '{aws,cloud}'),
+        ('Docker API',           'docker_api_honeypot',  'Exposed Docker daemon API',            jsonb_build_object('port', 2375),                                                       '{docker,container}'),
+        ('Kubernetes API',       'k8s_api_honeypot',     'Kubernetes API server',                jsonb_build_object('port', 6443),                                                       '{kubernetes,container}'),
+        ('HTTP Web Server',      'http_honeypot',        'Apache2 Ubuntu default page',          jsonb_build_object('port', 80),                                                         '{http,web}'),
+        ('Redis Cache',          'redis_honeypot',       'Redis in-memory cache',                jsonb_build_object('port', 6379),                                                       '{redis,cache}'),
+        ('PostgreSQL Database',  'postgresql_honeypot',  'PostgreSQL 16 database',               jsonb_build_object('port', 5432),                                                       '{database,postgresql}'),
+        ('FTP Server',           'ftp_honeypot',         'ProFTPD server',                       jsonb_build_object('port', 21),                                                         '{ftp,file}'),
+        ('SMTP Mail Server',     'smtp_honeypot',        'Postfix mail server',                  jsonb_build_object('port', 25),                                                         '{smtp,mail}'),
+        ('Telnet Device',        'telnet_honeypot',      'BusyBox IoT device',                   jsonb_build_object('port', 23),                                                         '{iot,telnet}'),
+        ('VNC Server',           'vnc_honeypot',         'VNC remote desktop',                   jsonb_build_object('port', 5900),                                                       '{vnc,remote}'),
+        ('SNMP Agent',           'snmp_honeypot',        'SNMP network device',                  jsonb_build_object('port', 161),                                                        '{snmp,network}'),
+        ('DNS Server',           'dns_honeypot',         'DNS resolver',                         jsonb_build_object('port', 53),                                                         '{dns,network}')
+    """))
 
 def downgrade() -> None:
-    for table in ("events", "alerts", "alert_rules", "decoys", "decoy_networks", "integrations"):
+    # events excluded: RLS not supported on hypertables with columnstore
+    for table in ("alerts", "alert_rules", "decoys", "decoy_networks", "integrations"):
         op.execute(f"DROP POLICY IF EXISTS tenant_isolation ON {table}")
         op.execute(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY")
 

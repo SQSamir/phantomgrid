@@ -14,6 +14,7 @@ class VncHandler(BaseHoneypotHandler):
         if not await self.tracker.allow(ip):
             writer.close(); return
         try:
+            await self.emit(ip, None, "connection", "medium", {"server": "RFB 003.008"})
             writer.write(b"RFB 003.008\n")
             await writer.drain()
             client_version = await asyncio.wait_for(reader.read(12), timeout=10)

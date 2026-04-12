@@ -14,6 +14,7 @@ class SmbHandler(BaseHoneypotHandler):
         if not await self.tracker.allow(ip):
             writer.close(); return
         try:
+            await self.emit(ip, None, "connection", "medium", {})
             data = await asyncio.wait_for(reader.read(4096), timeout=30)
             if len(data) < 4:
                 return

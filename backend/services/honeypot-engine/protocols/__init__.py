@@ -13,3 +13,10 @@ from .mysql_handler import MysqlHandler
 from .postgresql_handler import PostgresqlHandler
 from .smb_handler import SmbHandler
 from .k8s_api_handler import K8sApiHandler
+from .rdp_handler import RdpHandler
+from .mssql_handler import MssqlHandler
+from .modbus_handler import ModbusHandler
+from .dnp3_handler import Dnp3Handler
+from .s7_handler import S7Handler
+from .mqtt_handler import MqttHandler
+from .coap_handler import CoapHandler

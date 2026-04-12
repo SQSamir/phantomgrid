@@ -1,6 +1,6 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import {
-  LayoutDashboard, Zap, Bell, Shield, Map, Plug, LogOut, Ghost,
+  LayoutDashboard, Zap, Bell, Shield, Map, Plug, LogOut, Ghost, Crosshair,
 } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
 
@@ -9,6 +9,7 @@ const NAV = [
   { to: '/events',      label: 'Events',      icon: Zap },
   { to: '/alerts',      label: 'Alerts',      icon: Bell },
   { to: '/decoys',      label: 'Decoys',      icon: Shield },
+  { to: '/artifacts',   label: 'Artifacts',   icon: Crosshair },
   { to: '/mitre',       label: 'MITRE ATT&CK',icon: Map },
   { to: '/integrations',label: 'Integrations',icon: Plug },
 ];

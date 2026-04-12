@@ -67,7 +67,7 @@ services:
       retries: 10
 
   clickhouse:
-    image: clickhouse/clickhouse-server:24
+    image: clickhouse/clickhouse-server:23.8
 
   minio:
     image: minio/minio:latest
@@ -128,6 +128,14 @@ services:
     - 18080:18080
     - 18169:18169
     - 15353:15353/udp
+    # New protocols
+    - 13389:13389
+    - 11433:11433
+    - 10502:10502
+    - 10020:10020
+    - 10102:10102
+    - 11883:11883
+    - 15683:15683/udp
     working_dir: /app/backend/services/honeypot-engine
     environment:
       <<: *app-env
@@ -204,3 +212,14 @@ services:
     command: sh -c "npm i && npm run dev"
     ports:
     - 3000:3000
+
+  migrate:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.migrate
+    environment:
+      POSTGRES_DSN: postgresql+asyncpg://phantomgrid:change_me@postgres:5432/phantomgrid
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy

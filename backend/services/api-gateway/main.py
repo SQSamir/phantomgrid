@@ -56,6 +56,7 @@ _UPSTREAM = {
     "/api/decoys":     os.getenv("UPSTREAM_DECOYS",         "http://decoy-manager:8080"),
     "/api/decoy-networks": os.getenv("UPSTREAM_DECOYS",     "http://decoy-manager:8080"),
     "/api/decoy-templates": os.getenv("UPSTREAM_DECOYS",    "http://decoy-manager:8080"),
+    "/api/artifacts":  os.getenv("UPSTREAM_DECOYS",         "http://decoy-manager:8080"),
     "/api/tenants":    os.getenv("UPSTREAM_TENANTS",        "http://tenant-manager:8080"),
     "/api/mitre":      os.getenv("UPSTREAM_MITRE",          "http://mitre-mapper:8080"),
     "/api/notifications": os.getenv("UPSTREAM_NOTIFICATIONS", "http://notifications:8080"),
@@ -69,6 +70,7 @@ _PUBLIC_PREFIXES = {
     "/auth/register",
     "/auth/login",
     "/auth/refresh",
+    "/api/artifacts/t",   # honeytoken trigger — no JWT, token_id is the auth
 }
 
 def _resolve_upstream(path: str) -> str | None:
