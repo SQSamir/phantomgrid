@@ -13,6 +13,7 @@ import Mitre from './pages/Mitre';
 import Integrations from './pages/Integrations';
 import Artifacts from './pages/Artifacts';
 import ActiveResponse from './pages/ActiveResponse';
+import Users from './pages/Users';
 
 export default function App() {
   return (
@@ -36,6 +37,7 @@ export default function App() {
         <Route path="/integrations"     element={<Integrations />} />
         <Route path="/artifacts"        element={<Artifacts />} />
         <Route path="/active-response"  element={<ActiveResponse />} />
+        <Route path="/users"            element={<Users />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

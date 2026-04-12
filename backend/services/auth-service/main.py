@@ -181,8 +181,21 @@ async def health():
     return {"status": "ok"}
 
 
+def _registration_enabled(tenant_config: dict) -> bool:
+    """Return True unless admin has explicitly disabled registration."""
+    return tenant_config.get("registration_enabled", True)
+
+
 @app.post("/auth/register")
 async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
+    # Self-registration check: if ANY tenant has disabled registration we refuse.
+    # (For a fresh install with no tenants yet the check passes.)
+    # We check a global Redis flag set by the first tenant's admin.
+    r = get_redis()
+    reg_disabled = await r.get("global:registration_disabled")
+    if reg_disabled == "1":
+        raise HTTPException(403, "registration is disabled — contact your administrator")
+
     exists = await db.scalar(select(User).where(User.email == req.email))
     if exists:
         raise HTTPException(409, "email exists")
@@ -408,3 +421,227 @@ async def mfa_verify(payload: dict, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await r.setex(replay_key, 120, "1")
     return {"ok": True}
+
+
+# ===========================================================================
+# Admin — User Management
+# All endpoints require a valid JWT with role == "tenant_admin".
+# Users can only manage others within their own tenant.
+# ===========================================================================
+
+from sqlalchemy import func as sqlfunc
+
+
+def _user_out(u: User) -> dict:
+    return {
+        "id":                    str(u.id),
+        "tenant_id":             str(u.tenant_id),
+        "email":                 u.email,
+        "display_name":          u.display_name,
+        "role":                  u.role,
+        "mfa_enabled":           u.mfa_enabled,
+        "failed_login_attempts": u.failed_login_attempts or 0,
+        "locked":                bool(u.locked_until and u.locked_until > _now()),
+        "locked_until":          u.locked_until.isoformat() if u.locked_until else None,
+        "last_login_at":         u.last_login_at.isoformat() if u.last_login_at else None,
+        "created_at":            u.created_at.isoformat() if u.created_at else None,
+        "active":                u.deactivated_at is None,
+    }
+
+
+async def _require_admin(authorization: str = Header(default=""), db: AsyncSession = Depends(get_db)):
+    """Dependency: decode JWT, ensure caller is tenant_admin, return (claims, user)."""
+    token = await _token_from_authz(authorization)
+    claims = await _decode_access(token)
+    if claims.get("role") != "tenant_admin":
+        raise HTTPException(403, "admin role required")
+    u = await db.scalar(select(User).where(User.id == claims["sub"]))
+    if not u or u.deactivated_at:
+        raise HTTPException(401, "user not found")
+    return claims, u
+
+
+@app.get("/auth/admin/users")
+async def admin_list_users(
+    offset: int = 0,
+    limit:  int = 50,
+    auth=Depends(_require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    claims, caller = auth
+    tid = caller.tenant_id
+    rows = await db.execute(
+        select(User)
+        .where(User.tenant_id == tid)
+        .order_by(User.created_at.desc())
+        .offset(offset).limit(min(limit, 200))
+    )
+    users = rows.scalars().all()
+    total = await db.scalar(
+        select(sqlfunc.count(User.id)).where(User.tenant_id == tid)
+    )
+    return {"total": total, "items": [_user_out(u) for u in users]}
+
+
+@app.get("/auth/admin/users/{user_id}")
+async def admin_get_user(
+    user_id: str,
+    auth=Depends(_require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    claims, caller = auth
+    u = await db.scalar(
+        select(User).where(User.id == user_id, User.tenant_id == caller.tenant_id)
+    )
+    if not u:
+        raise HTTPException(404, "user not found")
+    return _user_out(u)
+
+
+class AdminCreateUser(BaseModel):
+    email: str
+    password: str
+    display_name: str | None = None
+    role: str = "viewer"
+
+
+@app.post("/auth/admin/users", status_code=201)
+async def admin_create_user(
+    body: AdminCreateUser,
+    auth=Depends(_require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    claims, caller = auth
+    if body.role not in ("tenant_admin", "analyst", "viewer"):
+        raise HTTPException(400, "role must be tenant_admin, analyst, or viewer")
+    exists = await db.scalar(select(User).where(User.email == body.email))
+    if exists:
+        raise HTTPException(409, "email already registered")
+    hashed = await _hash_password(body.password)
+    u = User(
+        tenant_id=caller.tenant_id,
+        email=body.email,
+        password_hash=hashed,
+        role=body.role,
+        display_name=body.display_name,
+    )
+    db.add(u)
+    await db.commit()
+    await db.refresh(u)
+    return _user_out(u)
+
+
+class AdminUpdateUser(BaseModel):
+    display_name: str | None = None
+    role:         str | None = None
+    active:       bool | None = None   # False = deactivate, True = reactivate
+    unlock:       bool | None = None   # True = clear lockout
+
+
+@app.patch("/auth/admin/users/{user_id}")
+async def admin_update_user(
+    user_id: str,
+    body: AdminUpdateUser,
+    auth=Depends(_require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    claims, caller = auth
+    u = await db.scalar(
+        select(User).where(User.id == user_id, User.tenant_id == caller.tenant_id)
+    )
+    if not u:
+        raise HTTPException(404, "user not found")
+    if str(u.id) == str(caller.id) and body.role is not None and body.role != "tenant_admin":
+        raise HTTPException(400, "cannot demote yourself")
+    if body.display_name is not None:
+        u.display_name = body.display_name
+    if body.role is not None:
+        if body.role not in ("tenant_admin", "analyst", "viewer"):
+            raise HTTPException(400, "invalid role")
+        u.role = body.role
+    if body.active is False:
+        if str(u.id) == str(caller.id):
+            raise HTTPException(400, "cannot deactivate yourself")
+        u.deactivated_at = _now()
+    elif body.active is True:
+        u.deactivated_at = None
+    if body.unlock:
+        u.failed_login_attempts = 0
+        u.locked_until = None
+    await db.commit()
+    await db.refresh(u)
+    return _user_out(u)
+
+
+class AdminResetPassword(BaseModel):
+    new_password: str
+
+
+@app.post("/auth/admin/users/{user_id}/reset-password")
+async def admin_reset_password(
+    user_id: str,
+    body: AdminResetPassword,
+    auth=Depends(_require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    claims, caller = auth
+    u = await db.scalar(
+        select(User).where(User.id == user_id, User.tenant_id == caller.tenant_id)
+    )
+    if not u:
+        raise HTTPException(404, "user not found")
+    if len(body.new_password) < 8:
+        raise HTTPException(400, "password must be at least 8 characters")
+    u.password_hash = await _hash_password(body.new_password)
+    u.failed_login_attempts = 0
+    u.locked_until = None
+    await db.commit()
+    return {"ok": True}
+
+
+@app.delete("/auth/admin/users/{user_id}", status_code=204)
+async def admin_delete_user(
+    user_id: str,
+    auth=Depends(_require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    claims, caller = auth
+    if user_id == str(caller.id):
+        raise HTTPException(400, "cannot delete yourself")
+    u = await db.scalar(
+        select(User).where(User.id == user_id, User.tenant_id == caller.tenant_id)
+    )
+    if not u:
+        raise HTTPException(404, "user not found")
+    await db.delete(u)
+    await db.commit()
+
+
+# ===========================================================================
+# Admin — Registration toggle
+# ===========================================================================
+
+@app.get("/auth/admin/settings")
+async def admin_get_settings(
+    auth=Depends(_require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    r = get_redis()
+    disabled = await r.get("global:registration_disabled")
+    return {"registration_enabled": disabled != "1"}
+
+
+@app.patch("/auth/admin/settings")
+async def admin_update_settings(
+    body: dict,
+    auth=Depends(_require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    r = get_redis()
+    if "registration_enabled" in body:
+        if body["registration_enabled"]:
+            await r.delete("global:registration_disabled")
+        else:
+            await r.set("global:registration_disabled", "1")
+    disabled = await r.get("global:registration_disabled")
+    return {"registration_enabled": disabled != "1"}
