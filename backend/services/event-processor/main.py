@@ -3,11 +3,11 @@ Event Processor — enriches raw honeypot events and persists them to the DB.
 
 Kafka consumer:  events.raw  →  enrich  →  events.enriched  (+ DB insert)
 
-HTTP API (served to the gateway):
-  GET  /api/events        paginated list, filterable by severity / protocol
-  GET  /api/events/{id}   single event detail
+HTTP API:
+  GET  /api/events          paginated list, filterable by severity / protocol / source_ip
+  GET  /api/events/{id}     single event detail
   GET  /health
-  GET  /metrics           Prometheus
+  GET  /metrics             Prometheus
 """
 import asyncio
 import ipaddress
@@ -21,10 +21,9 @@ import httpx
 import structlog
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from fastapi import Depends, FastAPI, HTTPException, Query
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func, select, cast, String
 
-from backend.shared.db import get_db, tenant_db
+from backend.shared.db import tenant_db
 from backend.shared.kafka import create_consumer, create_producer, send_json
 from backend.shared.mitre_map import get_techniques
 from backend.shared.models.event import Event
@@ -49,20 +48,59 @@ def _is_private(ip: str) -> bool:
         return True
 
 
+async def _geoip(ip: str) -> dict:
+    """Real GeoIP via ip-api.com with 24-hour Redis caching."""
+    if _is_private(ip):
+        return {}
+    r = get_redis()
+    cache_key = f"geoip:{ip}"
+    cached = await r.get(cache_key)
+    if cached:
+        try:
+            return json.loads(cached)
+        except Exception:
+            pass
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as c:
+            resp = await c.get(
+                f"http://ip-api.com/json/{ip}",
+                params={
+                    "fields": "status,country,countryCode,regionName,city,lat,lon,isp,org,as"
+                },
+            )
+            if resp.status_code == 200:
+                d = resp.json()
+                if d.get("status") == "success":
+                    geo = {
+                        "country":      d.get("country"),
+                        "country_code": d.get("countryCode"),
+                        "city":         d.get("city"),
+                        "region":       d.get("regionName"),
+                        "lat":          d.get("lat"),
+                        "lon":          d.get("lon"),
+                        "isp":          d.get("isp"),
+                        "asn":          d.get("as"),
+                    }
+                    await r.setex(cache_key, 86400, json.dumps(geo))
+                    return geo
+    except Exception as exc:
+        log.warning("geoip_lookup_failed", ip=ip, error=str(exc))
+    # Cache negative result for 1 hour to avoid hammering the free API
+    await r.setex(cache_key, 3600, json.dumps({"country": "Unknown"}))
+    return {"country": "Unknown"}
+
+
 async def _abuse_score(ip: str) -> int:
+    """AbuseIPDB stub — returns 0 until an API key is configured."""
+    if _is_private(ip):
+        return 0
     r = get_redis()
     k = f"abuse:{ip}"
     cached = await r.get(k)
     if cached is not None:
         return int(cached)
     score = 0
-    if not _is_private(ip):
-        try:
-            async with httpx.AsyncClient(timeout=2.0) as c:
-                _ = c  # reserved for AbuseIPDB integration
-                score = 0
-        except Exception:
-            score = 0
+    # TODO: plug in real AbuseIPDB key via ABUSEIPDB_API_KEY env var
     await r.setex(k, 24 * 3600, str(score))
     return score
 
@@ -77,18 +115,15 @@ async def _is_tor_exit(ip: str) -> bool:
 async def _enrich(event: dict) -> dict:
     ip = event.get("source_ip", "0.0.0.0")
     private = _is_private(ip)
+
+    geo = {} if private else await _geoip(ip)
+
     event["enrichment"] = {
-        "country": None if private else "Unknown",
-        "country_code": None,
-        "city": None,
-        "lat": None,
-        "lon": None,
-        "asn": None,
-        "isp": None,
-        "is_tor": await _is_tor_exit(ip),
-        "is_vpn": False,
-        "abuse_score": await _abuse_score(ip),
-        "enriched_at": datetime.now(timezone.utc).isoformat(),
+        **geo,
+        "is_tor":       await _is_tor_exit(ip),
+        "is_vpn":       False,
+        "abuse_score":  await _abuse_score(ip),
+        "enriched_at":  datetime.now(timezone.utc).isoformat(),
     }
     event["mitre_technique_ids"] = get_techniques(
         event.get("protocol", ""), event.get("event_type", "")
@@ -181,44 +216,64 @@ async def health():
 
 def _event_to_dict(e: Event) -> dict[str, Any]:
     return {
-        "id": str(e.id),
-        "tenant_id": str(e.tenant_id),
-        "decoy_id": str(e.decoy_id) if e.decoy_id else None,
-        "session_id": str(e.session_id) if e.session_id else None,
-        "source_ip": e.source_ip,
-        "source_port": e.source_port,
-        "destination_ip": e.destination_ip,
-        "destination_port": e.destination_port,
-        "protocol": e.protocol,
-        "event_type": e.event_type,
-        "severity": e.severity,
-        "raw_data": e.raw_data,
-        "enrichment": e.enrichment,
+        "id":                  str(e.id),
+        "tenant_id":           str(e.tenant_id),
+        "decoy_id":            str(e.decoy_id) if e.decoy_id else None,
+        "session_id":          str(e.session_id) if e.session_id else None,
+        "source_ip":           e.source_ip,
+        "source_port":         e.source_port,
+        "destination_ip":      e.destination_ip,
+        "destination_port":    e.destination_port,
+        "protocol":            e.protocol,
+        "event_type":          e.event_type,
+        "severity":            e.severity,
+        "raw_data":            e.raw_data,
+        "enrichment":          e.enrichment,
         "mitre_technique_ids": e.mitre_technique_ids,
-        "tags": e.tags,
-        "created_at": e.created_at.isoformat() if e.created_at else None,
+        "tags":                e.tags,
+        "created_at":          e.created_at.isoformat() if e.created_at else None,
     }
 
 
 @app.get("/api/events")
 async def list_events(
     ctx: TenantContext = Depends(require_tenant),
-    severity: str | None = Query(default=None),
-    protocol: str | None = Query(default=None),
-    page: int = Query(default=1, ge=1),
+    severity:  str | None = Query(default=None),
+    protocol:  str | None = Query(default=None),
+    source_ip: str | None = Query(default=None),
+    # support both offset/limit (frontend) and page/page_size (legacy)
+    offset:    int = Query(default=0,  ge=0),
+    limit:     int = Query(default=50, ge=1, le=200),
+    page:      int = Query(default=0,  ge=0),      # legacy — ignored if offset set
     page_size: int = Query(default=50, ge=1, le=200),
 ):
+    # offset/limit takes precedence over page/page_size
+    real_offset = offset if offset else page * page_size
+    real_limit  = limit
+
     async with tenant_db(ctx.tenant_id) as session:
-        q = select(Event).order_by(Event.created_at.desc())
+        base = select(Event).where(Event.tenant_id == ctx.tenant_id)
         if severity:
-            q = q.where(Event.severity == severity)
+            base = base.where(Event.severity == severity)
         if protocol:
-            q = q.where(Event.protocol == protocol)
-        offset = (page - 1) * page_size
-        q = q.offset(offset).limit(page_size)
-        result = await session.execute(q)
+            base = base.where(Event.protocol == protocol.upper())
+        if source_ip:
+            base = base.where(cast(Event.source_ip, String) == source_ip)
+
+        total = await session.scalar(
+            select(func.count()).select_from(base.subquery())
+        )
+        result = await session.execute(
+            base.order_by(Event.created_at.desc())
+                .offset(real_offset)
+                .limit(real_limit)
+        )
         events = result.scalars().all()
-    return {"items": [_event_to_dict(e) for e in events], "page": page, "page_size": page_size}
+
+    return {
+        "total": total or 0,
+        "items": [_event_to_dict(e) for e in events],
+    }
 
 
 @app.get("/api/events/{event_id}")
@@ -228,7 +283,10 @@ async def get_event(
 ):
     async with tenant_db(ctx.tenant_id) as session:
         result = await session.execute(
-            select(Event).where(Event.id == event_id)
+            select(Event).where(
+                Event.id == event_id,
+                Event.tenant_id == ctx.tenant_id,
+            )
         )
         event = result.scalar_one_or_none()
     if not event:

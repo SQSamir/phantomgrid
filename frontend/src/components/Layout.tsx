@@ -1,21 +1,24 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import {
-  LayoutDashboard, Zap, Bell, Shield, Map, Plug, LogOut, Ghost, Crosshair,
+  LayoutDashboard, Zap, Bell, Shield, Map, Plug, LogOut,
+  Ghost, Crosshair, Users, Terminal,
 } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
 
 const NAV = [
-  { to: '/',            label: 'Dashboard',   icon: LayoutDashboard },
-  { to: '/events',      label: 'Events',      icon: Zap },
-  { to: '/alerts',      label: 'Alerts',      icon: Bell },
-  { to: '/decoys',      label: 'Decoys',      icon: Shield },
-  { to: '/artifacts',   label: 'Artifacts',   icon: Crosshair },
-  { to: '/mitre',       label: 'MITRE ATT&CK',icon: Map },
-  { to: '/integrations',label: 'Integrations',icon: Plug },
+  { to: '/',            label: 'Dashboard',    icon: LayoutDashboard },
+  { to: '/events',      label: 'Events',       icon: Zap },
+  { to: '/alerts',      label: 'Alerts',       icon: Bell },
+  { to: '/attackers',   label: 'Attackers',    icon: Users },
+  { to: '/sessions',    label: 'Sessions',     icon: Terminal },
+  { to: '/decoys',      label: 'Decoys',       icon: Shield },
+  { to: '/artifacts',   label: 'Artifacts',    icon: Crosshair },
+  { to: '/mitre',       label: 'MITRE ATT&CK', icon: Map },
+  { to: '/integrations',label: 'Integrations', icon: Plug },
 ];
 
 export default function Layout() {
-  const logout = useAuthStore((s) => s.logout);
+  const logout   = useAuthStore((s) => s.logout);
   const navigate = useNavigate();
 
   const handleLogout = async () => {
@@ -31,7 +34,8 @@ export default function Layout() {
           <Ghost className="text-indigo-400" size={22} />
           <span className="font-bold text-lg tracking-tight text-white">PhantomGrid</span>
         </div>
-        <nav className="flex-1 px-2 py-3 space-y-0.5">
+
+        <nav className="flex-1 px-2 py-3 space-y-0.5 overflow-y-auto">
           {NAV.map(({ to, label, icon: Icon }) => (
             <NavLink
               key={to}
@@ -50,6 +54,7 @@ export default function Layout() {
             </NavLink>
           ))}
         </nav>
+
         <div className="px-2 py-3 border-t border-gray-800">
           <button
             onClick={handleLogout}
