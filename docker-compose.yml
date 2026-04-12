@@ -1,3 +1,13 @@
+x-app-env: &app-env
+  PYTHONPATH: /app
+  POSTGRES_DSN: postgresql+asyncpg://phantomgrid:change_me@postgres:5432/phantomgrid
+  REDIS_URL: redis://redis:6379/0
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  JWT_SECRET: ${JWT_SECRET:-dev_secret_key_change_me_in_production_32ch}
+  # Fernet key below is base64url of 32 bytes of "dev..." — FOR LOCAL DEV ONLY
+  MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:-ZGV2ZGV2ZGV2ZGV2ZGV2ZGV2ZGV2ZGV2ZGV2ZGV2ZGU=}
+  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+
 services:
   postgres:
     image: timescale/timescaledb:latest-pg16
@@ -12,6 +22,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
   redis:
     image: redis:7-alpine
     healthcheck:
@@ -22,6 +33,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.0
     environment:
@@ -36,6 +48,7 @@ services:
       timeout: 5s
       retries: 8
       start_period: 20s
+
   kafka:
     image: confluentinc/cp-kafka:7.6.0
     depends_on:
@@ -52,14 +65,17 @@ services:
       interval: 20s
       timeout: 10s
       retries: 10
+
   clickhouse:
     image: clickhouse/clickhouse-server:24
+
   minio:
     image: minio/minio:latest
     command: server /data --console-address ':9001'
     environment:
       MINIO_ROOT_USER: minio
       MINIO_ROOT_PASSWORD: minio123
+
   api-gateway:
     build:
       context: .
@@ -72,7 +88,8 @@ services:
     - kafka
     working_dir: /app/backend/services/api-gateway
     environment:
-      PYTHONPATH: /app
+      <<: *app-env
+
   auth-service:
     build:
       context: .
@@ -81,14 +98,16 @@ services:
     - postgres
     working_dir: /app/backend/services/auth-service
     environment:
-      PYTHONPATH: /app
+      <<: *app-env
+
   decoy-manager:
     build:
       context: .
       dockerfile: backend/services/decoy-manager/Dockerfile
     working_dir: /app/backend/services/decoy-manager
     environment:
-      PYTHONPATH: /app
+      <<: *app-env
+
   honeypot-engine:
     build:
       context: .
@@ -111,63 +130,72 @@ services:
     - 15353:15353/udp
     working_dir: /app/backend/services/honeypot-engine
     environment:
-      PYTHONPATH: /app
+      <<: *app-env
+
   event-processor:
     build:
       context: .
       dockerfile: backend/services/event-processor/Dockerfile
     working_dir: /app/backend/services/event-processor
     environment:
-      PYTHONPATH: /app
+      <<: *app-env
+
   alert-engine:
     build:
       context: .
       dockerfile: backend/services/alert-engine/Dockerfile
     working_dir: /app/backend/services/alert-engine
     environment:
-      PYTHONPATH: /app
+      <<: *app-env
+
   analytics:
     build:
       context: .
       dockerfile: backend/services/analytics/Dockerfile
     working_dir: /app/backend/services/analytics
     environment:
-      PYTHONPATH: /app
+      <<: *app-env
+
   mitre-mapper:
     build:
       context: .
       dockerfile: backend/services/mitre-mapper/Dockerfile
     working_dir: /app/backend/services/mitre-mapper
     environment:
-      PYTHONPATH: /app
+      <<: *app-env
+
   realtime:
     build:
       context: .
       dockerfile: backend/services/realtime/Dockerfile
     working_dir: /app/backend/services/realtime
     environment:
-      PYTHONPATH: /app
+      <<: *app-env
+
   notifications:
     build:
       context: .
       dockerfile: backend/services/notifications/Dockerfile
     working_dir: /app/backend/services/notifications
     environment:
-      PYTHONPATH: /app
+      <<: *app-env
+
   tenant-manager:
     build:
       context: .
       dockerfile: backend/services/tenant-manager/Dockerfile
     working_dir: /app/backend/services/tenant-manager
     environment:
-      PYTHONPATH: /app
+      <<: *app-env
+
   integrations:
     build:
       context: .
       dockerfile: backend/services/integrations/Dockerfile
     working_dir: /app/backend/services/integrations
     environment:
-      PYTHONPATH: /app
+      <<: *app-env
+
   frontend:
     image: node:22-alpine
     working_dir: /app
