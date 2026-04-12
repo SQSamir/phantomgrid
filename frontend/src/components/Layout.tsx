@@ -1,7 +1,7 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Zap, Bell, Shield, Map, Plug, LogOut,
-  Ghost, Crosshair, Users, Terminal,
+  Ghost, Crosshair, Users, Terminal, Swords,
 } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
 
@@ -14,7 +14,8 @@ const NAV = [
   { to: '/decoys',      label: 'Decoys',       icon: Shield },
   { to: '/artifacts',   label: 'Artifacts',    icon: Crosshair },
   { to: '/mitre',       label: 'MITRE ATT&CK', icon: Map },
-  { to: '/integrations',label: 'Integrations', icon: Plug },
+  { to: '/active-response', label: 'Active Response', icon: Swords },
+  { to: '/integrations',    label: 'Integrations',    icon: Plug },
 ];
 
 export default function Layout() {

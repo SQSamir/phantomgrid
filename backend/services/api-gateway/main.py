@@ -60,8 +60,9 @@ _UPSTREAM = {
     "/api/tenants":    os.getenv("UPSTREAM_TENANTS",        "http://tenant-manager:8080"),
     "/api/mitre":      os.getenv("UPSTREAM_MITRE",          "http://mitre-mapper:8080"),
     "/api/notifications": os.getenv("UPSTREAM_NOTIFICATIONS", "http://notifications:8080"),
-    "/api/integrations":  os.getenv("UPSTREAM_INTEGRATIONS",  "http://integrations:8080"),
-    "/ws":             os.getenv("UPSTREAM_REALTIME",       "http://realtime:8080"),
+    "/api/integrations":     os.getenv("UPSTREAM_INTEGRATIONS",      "http://integrations:8080"),
+    "/api/active-response":  os.getenv("UPSTREAM_ACTIVE_RESPONSE",   "http://active-response:8080"),
+    "/ws":                   os.getenv("UPSTREAM_REALTIME",           "http://realtime:8080"),
 }
 
 # Paths that do not require a valid JWT (matched by prefix)

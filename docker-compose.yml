@@ -3,10 +3,24 @@ x-app-env: &app-env
   POSTGRES_DSN: postgresql+asyncpg://phantomgrid:change_me@postgres:5432/phantomgrid
   REDIS_URL: redis://redis:6379/0
   KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  KAFKA_BROKERS: kafka:9092
   JWT_SECRET: ${JWT_SECRET:-dev_secret_key_change_me_in_production_32ch}
   # Fernet key below is base64url of 32 bytes of "dev..." — FOR LOCAL DEV ONLY
   MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:-ZGV2ZGV2ZGV2ZGV2ZGV2ZGV2ZGV2ZGV2ZGV2ZGV2ZGU=}
   CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+  # Phantom AI Engine (optional — leave blank to use static fallback)
+  PHANTOM_AI_ENABLED: ${PHANTOM_AI_ENABLED:-false}
+  LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+  LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+  LLM_API_KEY: ${LLM_API_KEY:-}
+  # Active Response
+  FIREWALL_TYPE: ${FIREWALL_TYPE:-none}
+  SOAR_WEBHOOK_URL: ${SOAR_WEBHOOK_URL:-}
+  JIRA_URL: ${JIRA_URL:-}
+  JIRA_API_TOKEN: ${JIRA_API_TOKEN:-}
+  SERVICENOW_URL: ${SERVICENOW_URL:-}
+  THEHIVE_URL: ${THEHIVE_URL:-}
+  THEHIVE_API_KEY: ${THEHIVE_API_KEY:-}
 
 services:
   postgres:
@@ -201,6 +215,17 @@ services:
       context: .
       dockerfile: backend/services/integrations/Dockerfile
     working_dir: /app/backend/services/integrations
+    environment:
+      <<: *app-env
+
+  active-response:
+    build:
+      context: .
+      dockerfile: backend/services/active-response/Dockerfile
+    working_dir: /app/backend/services/active-response
+    depends_on:
+    - kafka
+    - redis
     environment:
       <<: *app-env
 

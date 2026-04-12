@@ -12,6 +12,7 @@ import Decoys from './pages/Decoys';
 import Mitre from './pages/Mitre';
 import Integrations from './pages/Integrations';
 import Artifacts from './pages/Artifacts';
+import ActiveResponse from './pages/ActiveResponse';
 
 export default function App() {
   return (
@@ -32,8 +33,9 @@ export default function App() {
         <Route path="/sessions"     element={<Sessions />} />
         <Route path="/decoys"       element={<Decoys />} />
         <Route path="/mitre"        element={<Mitre />} />
-        <Route path="/integrations" element={<Integrations />} />
-        <Route path="/artifacts"    element={<Artifacts />} />
+        <Route path="/integrations"     element={<Integrations />} />
+        <Route path="/artifacts"        element={<Artifacts />} />
+        <Route path="/active-response"  element={<ActiveResponse />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
